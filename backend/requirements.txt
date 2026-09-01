@@ -1,0 +1,34 @@
+# AI Test Execution Platform — Python dependencies
+# Tested on Python 3.11+
+
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+playwright==1.44.0
+pydantic==2.7.1
+pydantic-settings==2.2.1
+python-multipart==0.0.9
+openai==1.40.0
+httpx==0.27.0
+SQLAlchemy==2.0.30
+PyJWT==2.8.0
+bcrypt==4.1.3
+
+# Imported by main.py / models/database.py but never pinned here. Both were
+# already required for this backend to run against Supabase at all — listing
+# them so a clean install matches what the code actually imports.
+python-dotenv>=1.0
+psycopg2-binary==2.9.12
+
+# ── Mobile testing engine (backend/mobile) ──────────────────────────────
+# Android automation. Requires `adb` and `aapt` on the host/image as well —
+# see the Dockerfile. Appium itself runs out of process; point at it with
+# APPIUM_HOST (APPIUM_START_ON_DEMAND=false) rather than installing Node here.
+Appium-Python-Client==6.0.0
+selenium==4.47.0
+
+# Document ingestion for AI test generation (PDF / DOCX / XLSX test sheets).
+# openai is already pinned above at 1.40.0, which satisfies the engine's >=1.0.
+PyMuPDF>=1.24
+python-docx>=1.1
+openpyxl>=3.1
+

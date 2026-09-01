@@ -1,0 +1,109 @@
+# =============================================================================
+# Merged from the previous repo root and the frontend's own ignore file.
+# Every rule from both is preserved; only exact duplicates were collapsed.
+# =============================================================================
+
+# --- Secrets -----------------------------------------------------------------
+# Load-bearing: the frontend .env holds Supabase keys and backend-node/.env
+# holds the service-role, OpenAI and Redis credentials. Nothing matching these
+# may ever be committed.
+.env
+**/.env
+.env.*
+**/.env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+!.env.example
+!**/.env.example
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+/lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.mypy_cache/
+.venv/
+venv/
+ENV/
+
+# --- Node --------------------------------------------------------------------
+node_modules
+node_modules/
+**/node_modules/
+dist
+dist/
+**/dist/
+dist-ssr
+*.local
+
+# --- Logs --------------------------------------------------------------------
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-debug.log*
+lerna-debug.log*
+
+# --- Playwright / test output ------------------------------------------------
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# --- Project specific --------------------------------------------------------
+storage/screenshots/*.png
+storage/logs/*.log
+**/storage/screenshots/*.png
+**/storage/logs/*.log
+selector_memory.json
+temp/
+
+# --- Internal working docs, not for the shared repo --------------------------
+NovaTest-AI-Push-Plan.md
+MIGRATION-STATUS.md
+
+# --- Editors -----------------------------------------------------------------
+.claude/
+.claude/*
+.vscode/
+.vscode/*
+!.vscode/extensions.json
+.idea
+.idea/
+*.swp
+*.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# --- OS ----------------------------------------------------------------------
+.DS_Store
+Thumbs.db

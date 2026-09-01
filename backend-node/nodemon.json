@@ -1,0 +1,18 @@
+{
+  "ignore": [
+    "storage/**",
+    "artifacts/**",
+    "uploads/**",
+    "prisma/generated/**",
+    "videos/**",
+    "screenshots/**",
+    "reports/**",
+    "logs/**",
+    "temp/**",
+    "*.mp4",
+    "*.webm",
+    "*.png",
+    "*.jpg",
+    "walkthrough.md"
+  ]
+}

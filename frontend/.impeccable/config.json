@@ -1,0 +1,20 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-font-size",
+        "value": "10px",
+        "createdAt": "2026-08-25T09:43:44.071Z",
+        "reason": "notification count badge inside a 16px dot; DESIGN.md's smallest Label step (12px) would clip double-digit counts in that footprint"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "0.875rem",
+        "createdAt": "2026-08-30T08:04:20.818Z",
+        "reason": "0.875rem is text-sm's exact documented value, expressed as raw CSS because it overrides react-phone-number-input's third-party class names (.PhoneInputInput) rather than applying a Tailwind class directly"
+      }
+    ]
+  }
+}

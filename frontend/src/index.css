@@ -1,0 +1,254 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Archivo", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-serif: "Besley", ui-serif, Georgia, "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-ink: #15121e;
+  --color-ink-soft: #4a4558;
+  --color-muted: #6d6780;
+  --color-paper: #f7f4ee;
+  --color-paper-alt: #ffffff;
+  --color-line: #e6e1d6;
+  --color-sand: #ede6d8;
+
+  --color-accent: #2853ff;
+  --color-accent-soft: #dbe6ff;
+  --color-accent-deep: #17307a;
+  --color-accent-ink: #eef2ff;
+
+  --color-pass: #178a4c;
+  --color-fail: #d43d3d;
+  --color-running: #2563eb;
+  --color-flaky: #b3760f;
+  --color-healing: #7c3aed;
+  --color-blocked: #6b7280;
+
+  --radius-card: 1.75rem;
+  --radius-md: 0.75rem;
+  --radius-sm: 0.375rem;
+
+  --shadow-float:
+    0 40px 70px -30px rgba(21, 18, 30, 0.35), 0 12px 24px -12px rgba(21, 18, 30, 0.18);
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+/* Thin scrollbars everywhere - the OS default is thick and clashes with the
+   rest of the app's restrained chrome. Applies globally (window scroll,
+   sidebar, tables, drawers, any overflow-auto container) since both
+   properties are inherited/matched via the universal selector. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-muted) 45%, transparent) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--color-muted) 45%, transparent);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-muted);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+@keyframes indeterminate-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+.animate-indeterminate {
+  animation: indeterminate-slide 1.1s ease-in-out infinite;
+}
+
+.bg-grain {
+  position: relative;
+}
+
+.bg-grain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.16;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/*
+ * react-phone-number-input overrides. The library ships bare structural
+ * CSS (style.css) with no visual theme, so its BEM-style class names are
+ * restyled here to read as the same bordered field as Input.tsx rather
+ * than a third-party widget.
+ */
+.PhoneInput {
+  align-items: stretch;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-line);
+  background: var(--color-paper-alt);
+  padding-left: 0.75rem;
+  transition: border-color 0.15s ease;
+}
+
+.PhoneInput:focus-within {
+  border-color: var(--color-accent);
+}
+
+.PhoneInput.phone-input--error {
+  border-color: var(--color-fail);
+}
+
+.PhoneInput.phone-input--error .country-select-chevron {
+  color: var(--color-fail);
+}
+
+.PhoneInputCountry {
+  color: var(--color-muted);
+}
+
+.PhoneInputCountryIcon {
+  height: 0.95em;
+}
+
+.PhoneInputInput {
+  border: none;
+  background: transparent;
+  padding: 0.625rem 0.75rem 0.625rem 0;
+  font-size: 0.875rem;
+  font-family: var(--font-sans);
+  color: var(--color-ink);
+}
+
+.PhoneInputInput:focus {
+  outline: none;
+}
+
+.PhoneInputInput::placeholder {
+  color: var(--color-muted);
+}
+
+/*
+ * Report print stylesheet (Document mode).
+ * Generic pagination rules, not scoped to one page: any future printable
+ * screen inherits sensible page-break behavior for free.
+ */
+@media print {
+  @page {
+    margin: 18mm 16mm;
+  }
+
+  /* Force background colors/gradients to print regardless of the browser's
+     "Background graphics" checkbox (unchecked by default in Chrome's print
+     dialog) - without this, print-only backgrounds silently disappear. */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* A printed page can't horizontally scroll, so ANY on-screen scroll
+     affordance (a scrollbar, a pair of chevron buttons) is dead weight in
+     print/PDF - worse, whatever content sat past the visible strip is
+     silently gone with no sign anything is missing. Two variants of this
+     bug, both neutralized here so a future scrollable addition doesn't
+     reintroduce it:
+     1) `min-w-max` tables (used on-screen so wide tables scroll inside
+        their own card instead of wrapping awkwardly) force the table wider
+        than the page. Dropping min-width lets the browser's normal table
+        layout shrink columns and wrap cell text to fit the page instead.
+     2) Any other `overflow-x-auto`/`overflow-auto` scroller (e.g. a
+        chevron-connected stepper) needs `overflow: visible` so print can't
+        clip it - but that alone isn't enough if its children are
+        non-wrapping (`shrink-0`/fixed-width): those also need
+        `print:flex-wrap` added at the component itself so the row
+        continues onto new lines instead of running off the page edge.
+        This rule only removes the clip; add the wrap utility per-component. */
+  table {
+    min-width: 0;
+  }
+
+  td,
+  th {
+    overflow-wrap: anywhere;
+  }
+
+  /* `whitespace-nowrap` (used on-screen so header labels/badges stay on one
+     line) overrides `overflow-wrap` above and forces the same overflow this
+     whole block exists to prevent - a table's shared <th> styling sets this,
+     so it's neutralized for every table, not just one. */
+  th {
+    white-space: normal !important;
+  }
+
+  .overflow-x-auto,
+  .overflow-x-scroll,
+  .overflow-auto {
+    overflow: visible !important;
+  }
+
+  /* Interactive chrome (an open dropdown menu, a modal, the Copilot drawer,
+     tab navigation, page-header action buttons) is meaningless in a static
+     export - worse, an open floating panel can render on top of the page
+     content it was supposed to sit above. These are fixed app-wide at the
+     shared component (Dropdown/Modal/Drawer/Tabs/PageHeader), each already
+     carrying its own `print:hidden`; nothing to add here, but any *new*
+     floating/transient UI should get the same treatment at its own
+     component rather than per-page. */
+
+  /* Report cover-to-close gradient wash. Deliberately NOT position:absolute -
+     a positioned overlay confined to a pixel range only ever lands on
+     whichever page its coordinates happen to fall on, and some print
+     pipelines (Windows' "Microsoft Print to PDF" driver in particular)
+     paginate positioned elements unpredictably, landing the block on the
+     wrong page entirely instead of the intended cover. A plain background
+     on the page frame itself has no such failure mode: it fills that
+     element's box everywhere the box exists, so it continues correctly
+     across every physical page the browser splits it into. The gradient
+     runs horizontally (not top-to-bottom) for the same reason applied to
+     "every page" specifically: a vertical fade looks identical on every
+     page only near the top of a short document - past a couple of pages
+     it has already faded to flat white. A horizontal wash doesn't depend
+     on vertical scroll position at all, so it reads the same on page 1
+     and page 9 alike. */
+  .report-print-canvas {
+    background: linear-gradient(
+      110deg,
+      color-mix(in srgb, var(--color-accent-soft) 55%, var(--color-paper-alt)) 0%,
+      var(--color-paper-alt) 62%
+    ) !important;
+  }
+
+  /* Never split a table row's cells across a page boundary. */
+  table tr {
+    break-inside: avoid;
+  }
+
+  /* A heading is never left alone at the bottom of a page, separated
+     from the content it introduces. */
+  h1,
+  h2,
+  h3 {
+    break-after: avoid;
+  }
+}
