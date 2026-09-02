@@ -20,7 +20,7 @@ import { OrchestratorAgent } from '../agents/OrchestratorAgent';
 import { ScenarioParserAgent } from '../agents/ScenarioParserAgent';
 import { JiraService } from '../services/JiraService';
 
-export const executionQueueName = 'test-executions';
+export const executionQueueName = process.env.NODE_ENV === 'production' ? 'test-executions' : 'test-executions-local';
 
 async function cleanupInterruptedJobs() {
   try {
