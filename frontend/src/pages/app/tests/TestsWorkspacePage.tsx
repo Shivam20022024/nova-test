@@ -192,7 +192,7 @@ export default function TestsWorkspacePage() {
   if (!activeProject || isAllProjects(activeProject)) {
     return (
       <div>
-        <PageHeader title="Tests" description="Test suites and their test cases." />
+        <PageHeader title="Test Suites" description="Organize web and API tests into suites and cases." />
         <EmptyState
           icon={FolderKanban}
           title="Select a project"
@@ -206,7 +206,7 @@ export default function TestsWorkspacePage() {
   return (
     <div>
       <PageHeader
-        title="Tests"
+        title="Test Suites"
         description={`Suites and test cases in ${activeProject.name}.`}
         actions={
           <>

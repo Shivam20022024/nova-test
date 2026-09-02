@@ -3,6 +3,7 @@ import useSWR from 'swr'
 import { BarChart3, RefreshCw } from 'lucide-react'
 import { Button } from '../../../components/ui/Button'
 import { Card } from '../../../components/ui/Card'
+import { Chip } from '../../../components/ui/Chip'
 import { EmptyState } from '../../../components/ui/EmptyState'
 import { ErrorState } from '../../../components/ui/ErrorState'
 import { PageHeader } from '../../../components/ui/PageHeader'
@@ -18,7 +19,16 @@ import type {
   BrowserDistributionEntry,
   DashboardSummary,
   ExecutionTrendPoint,
+  RunSource,
 } from '../../../lib/types'
+
+type SourceFilter = RunSource | 'all'
+
+const SOURCE_FILTERS: Array<{ id: SourceFilter; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'web', label: 'Web' },
+  { id: 'mobile', label: 'Mobile' },
+]
 
 /**
  * Two tabs only. The original design also had Test, Defects, Coverage and
@@ -40,6 +50,7 @@ export default function ReportsPage() {
   const { activeProject, scopedProjectId } = useData()
   const [activeTab, setActiveTab] = useState('overview')
   const [days, setDays] = useState('7')
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
 
   const scope = scopedProjectId ?? 'all'
 
@@ -78,6 +89,16 @@ export default function ReportsPage() {
     void Promise.all([summary.mutate(), trend.mutate(), browsers.mutate()])
   }
 
+  // Same rule as Command Center: 'web' fields sit at the top level of
+  // `summary` (pre-dating mobile support), 'mobile'/'combined' are nested,
+  // and 'all' has no single meaningful avgDuration to show.
+  const viewStats = useMemo(() => {
+    if (!summary.data) return null
+    if (sourceFilter === 'mobile') return summary.data.mobile
+    if (sourceFilter === 'all') return { ...summary.data.combined, avgDuration: null as number | null }
+    return summary.data
+  }, [summary.data, sourceFilter])
+
   return (
     <div>
       <PageHeader
@@ -90,6 +111,15 @@ export default function ReportsPage() {
           </Button>
         }
       />
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium text-muted">Show:</span>
+        {SOURCE_FILTERS.map((filter) => (
+          <Chip key={filter.id} active={sourceFilter === filter.id} onClick={() => setSourceFilter(filter.id)}>
+            {filter.label}
+          </Chip>
+        ))}
+      </div>
 
       <Tabs tabs={tabs} activeId={activeTab} onChange={setActiveTab} className="mb-6" />
 
@@ -108,7 +138,7 @@ export default function ReportsPage() {
           <Skeleton className="h-20 w-full rounded-card" />
           <Skeleton className="h-72 w-full rounded-card" />
         </div>
-      ) : (summary.data?.totalExecutions ?? 0) === 0 ? (
+      ) : (viewStats?.totalExecutions ?? 0) === 0 ? (
         <EmptyState
           icon={BarChart3}
           title="Nothing to report yet"
@@ -118,22 +148,28 @@ export default function ReportsPage() {
       ) : activeTab === 'overview' ? (
         <div className="flex flex-col gap-6">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <StatTile label="Executions" value={summary.data?.totalExecutions ?? 0} />
-            <StatTile label="Success rate" value={summary.data?.successRate ?? 0} unit="%" />
-            <StatTile label="Passed" value={summary.data?.passedCount ?? 0} />
-            <StatTile label="Failed" value={summary.data?.failedCount ?? 0} />
-            <StatTile label="Avg duration" value={summary.data?.avgDuration ?? 0} unit="s" />
-            <StatTile label="Self-healed" value={summary.data?.selfHealingCount ?? 0} />
+            <StatTile label="Executions" value={viewStats?.totalExecutions ?? 0} />
+            <StatTile label="Success rate" value={viewStats?.successRate ?? 0} unit="%" />
+            <StatTile label="Passed" value={viewStats?.passedCount ?? 0} />
+            <StatTile label="Failed" value={viewStats?.failedCount ?? 0} />
+            <StatTile
+              label="Avg duration"
+              value={viewStats?.avgDuration ?? '—'}
+              unit={viewStats?.avgDuration != null ? 's' : undefined}
+            />
+            <StatTile label="Self-healed" value={viewStats?.selfHealingCount ?? 0} />
           </div>
 
-          <Card className="p-5">
-            <h2 className="mb-4 font-sans text-sm font-semibold text-ink">Runs by browser</h2>
-            {browserBars.length > 0 ? (
-              <CategoryBarChart data={browserBars} />
-            ) : (
-              <p className="py-8 text-center text-sm text-muted">No browser data recorded.</p>
-            )}
-          </Card>
+          {sourceFilter !== 'mobile' && (
+            <Card className="p-5">
+              <h2 className="mb-4 font-sans text-sm font-semibold text-ink">Runs by browser</h2>
+              {browserBars.length > 0 ? (
+                <CategoryBarChart data={browserBars} />
+              ) : (
+                <p className="py-8 text-center text-sm text-muted">No browser data recorded.</p>
+              )}
+            </Card>
+          )}
         </div>
       ) : (
         <div className="flex flex-col gap-6">
@@ -150,7 +186,10 @@ export default function ReportsPage() {
           </div>
 
           <Card className="p-5">
-            <h2 className="mb-4 font-sans text-sm font-semibold text-ink">Total executions</h2>
+            <div className="mb-4 flex items-baseline justify-between gap-2">
+              <h2 className="font-sans text-sm font-semibold text-ink">Total executions</h2>
+              <span className="font-mono text-xs text-muted">Web + mobile</span>
+            </div>
             <LineTrendChart data={totalPoints} height={220} />
           </Card>
 

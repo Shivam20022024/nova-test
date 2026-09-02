@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { ChevronDown, ChevronRight, Layers, Play } from 'lucide-react'
 import { Button } from '../../../../components/ui/Button'
 import { Card } from '../../../../components/ui/Card'
@@ -13,11 +14,11 @@ import { formatDuration, formatWhen, statusLabel, toStatus } from '../mobileStat
 type Props = {
   suites: MobileSuite[]
   loading: boolean
-  onChanged: () => void
   onWatch: (executionId: number) => void
 }
 
-export function SuitesPanel({ suites, loading, onChanged, onWatch }: Props) {
+export function SuitesPanel({ suites, loading, onWatch }: Props) {
+  const navigate = useNavigate()
   const { triggerToast } = useToast()
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [running, setRunning] = useState<number | null>(null)
@@ -36,7 +37,7 @@ export function SuitesPanel({ suites, loading, onChanged, onWatch }: Props) {
     try {
       await api.mobile.runSuite(suite.id)
       triggerToast(`Re-running ${suite.name}.`)
-      onChanged()
+      navigate(`/app/mobile/executions/${suite.id}`)
     } catch (error) {
       triggerToast(`Could not start the suite: ${(error as Error).message}`, true)
     } finally {

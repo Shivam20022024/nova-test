@@ -8,6 +8,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import JSZip from "jszip";
 import novalantisLogoUrl from "../../assets/novalantis-logo.jpg";
+import { PDF_COLORS, PDF_MARGIN, pdfDecisionPalette as sharedDecisionPalette } from "./pdfDesignSystem";
 
 /**
  * Downloads a text/blob file in browser.
@@ -73,39 +74,10 @@ async function fetchImageDataUrl(url) {
 /* ────────────────────────────────────────────────────────────
  * PDF design system — shared colors, geometry, and helpers
  * ──────────────────────────────────────────────────────────── */
-const PDF = {
-  margin: 16,
-  colors: {
-    ink: [15, 23, 42],          // slate-900 — primary text
-    inkSoft: [71, 85, 105],     // slate-600 — secondary text
-    inkMuted: [148, 163, 184],  // slate-400 — tertiary text
-    hairline: [226, 232, 240],  // slate-200 — dividers
-    panelBg: [248, 250, 252],   // slate-50 — subtle panel fill
-    brandIndigo: [79, 70, 229],
-    brandCyan: [8, 145, 178],
-    emerald: [16, 185, 129],
-    emeraldDark: [22, 101, 52],
-    emeraldBg: [236, 253, 245],
-    emeraldBorder: [110, 231, 183],
-    rose: [244, 63, 94],
-    roseDark: [159, 18, 57],
-    roseBg: [255, 241, 242],
-    roseBorder: [251, 165, 178],
-    amber: [217, 119, 6],
-    amberDark: [133, 77, 14],
-    amberBg: [255, 251, 235],
-    amberBorder: [252, 211, 77],
-    white: [255, 255, 255],
-  },
-};
-
-function pdfDecisionPalette(decision) {
-  const isApproved = decision === "APPROVED";
-  const isBlocked = decision === "BLOCKED";
-  if (isApproved) return { bg: PDF.colors.emeraldBg, border: PDF.colors.emeraldBorder, text: PDF.colors.emeraldDark, accent: PDF.colors.emerald };
-  if (isBlocked) return { bg: PDF.colors.roseBg, border: PDF.colors.roseBorder, text: PDF.colors.roseDark, accent: PDF.colors.rose };
-  return { bg: PDF.colors.amberBg, border: PDF.colors.amberBorder, text: PDF.colors.amberDark, accent: PDF.colors.amber };
-}
+// Moved to pdfDesignSystem.ts, which the mobile report's PDF export shares —
+// kept the same local names here so nothing below this line had to change.
+const PDF = { margin: PDF_MARGIN, colors: PDF_COLORS };
+const pdfDecisionPalette = sharedDecisionPalette;
 
 /**
  * Generates a professional, multi-section Executive PDF Report:

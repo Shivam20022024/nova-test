@@ -113,7 +113,7 @@ export default function ApplicationPage() {
     return (
       <div>
         <PageHeader
-          title="Application"
+          title="App Discovery"
           description="AppGraph — the flows NovaTest AI has discovered in your application."
         />
         <EmptyState
@@ -131,7 +131,7 @@ export default function ApplicationPage() {
   return (
     <div>
       <PageHeader
-        title="Application"
+        title="App Discovery"
         description="AppGraph — crawl your application and keep a map of the flows worth testing."
       />
 

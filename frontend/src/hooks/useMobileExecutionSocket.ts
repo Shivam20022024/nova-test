@@ -35,6 +35,7 @@ export type MobileLiveEventType =
   | 'failure'
   | 'video_ready'
   | 'execution_completed'
+  | 'system_dialog_dismissed'
   | 'log'
 
 export type MobileLiveEvent = {
@@ -68,6 +69,8 @@ function describe(type: MobileLiveEventType, p: Record<string, unknown>): string
       return `Failure at step ${p.step_index}: ${p.category ?? ''} ${p.message ?? ''}`.trim()
     case 'video_ready':
       return 'Recording saved'
+    case 'system_dialog_dismissed':
+      return `Cleared a system dialog (${p.error_code}) that was blocking the screen`
     case 'execution_completed':
       return `Execution ${p.status}${p.duration_ms ? ` in ${p.duration_ms}ms` : ''}`
     case 'log':

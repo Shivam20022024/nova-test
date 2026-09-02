@@ -39,7 +39,9 @@ from mobile.schemas import (
     ExecutionCreateRequest,
     ExecutionOut,
     ExecutionPolicy,
+    HealingManualFixRequest,
     HealingRecordOut,
+    SuiteParallelRunRequest,
     TestCreateRequest,
 )
 from mobile.database import get_db
@@ -125,17 +127,12 @@ def _assert_in_scope(db: Session, scope: Optional[str], application_id: Optional
 def _artifact_url(storage_path: Optional[str]) -> Optional[str]:
     """Render a stored artifact location as something a browser can fetch.
 
-    storage_path holds one of two forms since evidence moved to object storage:
-    an absolute Supabase Storage URL, or the legacy repo-relative disk path.
-    Absolute URLs pass through untouched; local paths keep their leading slash
-    and backslash normalisation so historic rows still resolve through the
-    /storage mount.
+    Delegates to evidence.to_url() — the single place that owns this rule —
+    so engine.py/suite_engine.py/api.py can never drift out of sync on how a
+    storage_path (local disk path vs. Supabase Storage URL) is rendered.
     """
-    if not storage_path:
-        return None
-    if storage_path.startswith("http://") or storage_path.startswith("https://"):
-        return storage_path
-    return f"/{storage_path.replace(chr(92), '/')}"
+    from mobile import evidence as evidence_module
+    return evidence_module.to_url(storage_path)
 
 
 def _application_id_for_execution(db: Session, execution: MobileExecution) -> Optional[int]:
@@ -153,6 +150,7 @@ def _application_id_for_execution(db: Session, execution: MobileExecution) -> Op
 def get_capabilities():
     from mobile.ai_gateway import is_enabled as _ai_enabled
     from mobile import emulator_manager
+    from mobile import visual as visual_module
     return {
         "platform": "android",
         "automation": ["appium2", "uiautomator2", "adb"],
@@ -160,11 +158,27 @@ def get_capabilities():
             "autoheal": True,
             "video": True,
             "live_view": True,
-            "network_profiles": False,
-            "gps": False,
+            "network_profiles": True,
+            "gps": True,
             "ai_gateway": _ai_enabled(),
-            "visual": False,
+            "visual": visual_module.is_enabled(),
             "emulator_auto_start": emulator_manager.is_enabled(),
+        },
+        # Per-platform breakdown (integration plan Phase 6) — additive, the
+        # top-level "platform"/"automation" fields above are unchanged for
+        # any existing reader. Android is the real, exercised path this
+        # whole engine has run on; iOS's adapter (XCUITestOptions capability
+        # building, session-creation code path) exists and is wired into the
+        # same execution engine, but has never been run against a real
+        # device/simulator because that needs a macOS host, which nothing in
+        # this environment provides.
+        "platforms": {
+            "android": {"available": True, "automation": "uiautomator2"},
+            "ios": {
+                "available": False,
+                "automation": "xcuitest",
+                "reason": "iOS adapter interface exists (mobile/appium_manager.py:create_xcuitest_session) but requires a macOS host running Xcode + Appium's XCUITest driver, which is not configured in this environment.",
+            },
         },
         "adapter_version": "1.0.0",
     }
@@ -221,42 +235,29 @@ async def upload_application(
     else:
         tmp_path.unlink(missing_ok=True)
 
-    existing_version = db.query(MobileApplicationVersion).filter(
-        MobileApplicationVersion.sha256 == metadata.sha256
-    ).first()
-    def _claim(application: MobileApplication) -> None:
-        """Settle which project an existing application row belongs to.
+    def _owned_by_scope(query):
+        """Restrict a MobileApplication[Version] query to this project's own rows.
 
-        Applications are keyed by package name, so two projects uploading the
-        same package land on one row. Three cases, and the middle one is the
-        reason this is a function rather than an inline check:
-
-          unowned + we have a scope -> adopt it into this project
-          owned by us               -> nothing to do
-          owned by someone else     -> 409, never silently reassign
-
-        Reassigning would rip the app, its tests and its whole run history out
-        of the other project's view with no error shown to anybody. Returning
-        success while quietly leaving the app in a project the uploader cannot
-        see is just as bad in the other direction: they would upload, get a
-        200, and then find nothing. So this fails loudly instead.
+        Package names are not globally unique across projects: the same APK
+        (e.g. a shared demo app) can be uploaded independently into any number
+        of projects, each getting its own application row plus its own tests,
+        executions and versions built on top of it. So "does this project
+        already have this application/build" is always scoped to `scope`
+        (falling back to legacy rows with no project at all, for callers with
+        no scope) rather than looked up globally.
         """
-        if not scope:
-            return
-        if application.project_uuid is None:
-            application.project_uuid = scope
-            db.commit()
-            db.refresh(application)
-        elif application.project_uuid != scope:
-            raise HTTPException(
-                409,
-                f"The package '{application.package_name}' already belongs to a different project. "
-                "An APK can only live in one project; remove it there first, or upload it under a different package name.",
-            )
+        if scope:
+            return query.filter(MobileApplication.project_uuid == scope)
+        return query.filter(MobileApplication.project_uuid.is_(None))
+
+    existing_version = _owned_by_scope(
+        db.query(MobileApplicationVersion)
+        .join(MobileApplication, MobileApplication.id == MobileApplicationVersion.application_id)
+        .filter(MobileApplicationVersion.sha256 == metadata.sha256)
+    ).first()
 
     if existing_version:
         application = db.get(MobileApplication, existing_version.application_id)
-        _claim(application)
         return {
             "application": _application_out(application),
             "version_id": existing_version.id,
@@ -264,8 +265,8 @@ async def upload_application(
             "compatibility_warning": _framework_compatibility_warning(existing_version.framework_hint),
         }
 
-    application = db.query(MobileApplication).filter(
-        MobileApplication.package_name == metadata.package_name
+    application = _owned_by_scope(
+        db.query(MobileApplication).filter(MobileApplication.package_name == metadata.package_name)
     ).first()
     if application is None:
         application = MobileApplication(
@@ -275,8 +276,6 @@ async def upload_application(
         db.add(application)
         db.commit()
         db.refresh(application)
-    else:
-        _claim(application)
 
     version = MobileApplicationVersion(
         application_id=application.id,
@@ -486,6 +485,7 @@ def create_test(payload: TestCreateRequest, db: Session = Depends(get_db)):
         suite_id = _create_suite_and_run(
             db, name=payload.name, application_id=payload.application_id,
             device_id=payload.device_id, source="NL_GENERATE", tests=[test],
+            release_id=payload.release_id,
         )
 
     return {"id": test.id, "name": test.name, "suite_id": suite_id}
@@ -530,6 +530,21 @@ def _suite_out(db: Session, suite: MobileTestSuite) -> dict:
         .all()
     )
     exec_by_test = {e.test_id: e for e in executions}
+
+    # A parallel run (POST /suites/{id}/run-parallel) has no single owning
+    # thread left to call _finish_suite once every device's independent
+    # execution wraps up — each execution finishes on its own thread. So,
+    # exactly like compatibility runs' lazy convergence in
+    # _compatibility_run_out, whoever next reads this suite (the UI polling
+    # it) is what notices all tests reached a terminal state and flips it to
+    # COMPLETED. The single-device run_suite() path is unaffected: it always
+    # marks itself COMPLETED directly, so this is a no-op there.
+    if suite.status == "RUNNING" and len(exec_by_test) == len(tests) and all(
+        e.status in NON_RETRYABLE_TERMINAL_STATUSES for e in exec_by_test.values()
+    ):
+        suite.status = "COMPLETED"
+        suite.completed_at = datetime.datetime.utcnow()
+        db.commit()
 
     test_rows = []
     passed = failed = skipped = 0
@@ -613,6 +628,104 @@ def run_suite_manually(suite_id: int, db: Session = Depends(get_db)):
     return _suite_out(db, suite)
 
 
+@router.post("/suites/{suite_id}/run-parallel")
+def run_suite_parallel(suite_id: int, payload: SuiteParallelRunRequest, db: Session = Depends(get_db)):
+    """Runs every test in this suite across several devices at once, instead
+    of one after another on a single shared Appium session (that's what
+    POST /suites/{id}/run does). Each test becomes its own independent
+    execution — its own device, its own Appium server/session — spread
+    round-robin across `device_ids`, using the exact same run_execution()
+    engine and thread-per-execution pattern already proven by compatibility
+    runs below (independent OS threads, not BackgroundTasks.add_task in a
+    loop, so every device actually starts immediately rather than the
+    "parallel" jobs silently running one at a time). Trade-off, stated
+    plainly: no shared-session startup saving and no combined whole-suite
+    video (each device's tests are fully independent runs), in exchange for
+    genuine concurrency across devices."""
+    suite = db.get(MobileTestSuite, suite_id)
+    if not suite:
+        raise HTTPException(404, "Suite not found.")
+    if suite.status == "RUNNING":
+        raise HTTPException(409, "Suite is already running.")
+
+    tests = db.query(MobileTest).filter(MobileTest.suite_id == suite.id).order_by(MobileTest.id).all()
+    if not tests:
+        raise HTTPException(400, "This suite has no tests.")
+
+    device_ids = list(dict.fromkeys(payload.device_ids))  # dedupe, keep order
+    if len(device_ids) != len(payload.device_ids):
+        raise HTTPException(400, "device_ids contains duplicates.")
+    devices = db.query(MobileDevice).filter(MobileDevice.id.in_(device_ids)).all()
+    devices_by_id = {d.id: d for d in devices}
+    missing = [did for did in device_ids if did not in devices_by_id]
+    if missing:
+        raise HTTPException(404, f"Device id(s) not found: {missing}")
+    unavailable = [d.serial for d in devices if d.status == "RESERVED"]
+    if unavailable:
+        raise HTTPException(409, f"Device(s) already reserved by another execution: {unavailable}")
+
+    app_version_id = None
+    if suite.application_id:
+        latest = (
+            db.query(MobileApplicationVersion)
+            .filter(MobileApplicationVersion.application_id == suite.application_id, MobileApplicationVersion.status == "VALID")
+            .order_by(MobileApplicationVersion.uploaded_at.desc())
+            .first()
+        )
+        app_version_id = latest.id if latest else None
+
+    suite.status = "RUNNING"
+    suite.completed_at = None
+    suite.combined_video_path = None
+    db.commit()
+
+    execution_ids = []
+    for i, test in enumerate(tests):
+        device_id = device_ids[i % len(device_ids)]
+        execution = MobileExecution(
+            test_id=test.id, application_version_id=app_version_id,
+            device_id=device_id, suite_id=suite.id,
+            environment="DEV", status="QUEUED",
+            environment_snapshot={"execution_policy": ExecutionPolicy().dict()},
+        )
+        db.add(execution)
+        db.commit()
+        db.refresh(execution)
+        execution_ids.append(execution.id)
+
+    for execution_id in execution_ids:
+        threading.Thread(target=run_execution, args=(execution_id,), daemon=True).start()
+
+    return _suite_out(db, suite)
+
+
+def _read_hierarchy_text(storage_path: str, storage_root: Path) -> Optional[str]:
+    """Reads a captured UI-hierarchy XML back, regardless of whether it landed
+    on local disk or was uploaded to Supabase Storage (see evidence.py's
+    _persisted_path). This is queried well after the run that captured it —
+    possibly by a different backend instance — so, unlike the mid-run reads
+    elsewhere in this engine, local disk is NOT guaranteed to still have the
+    file; a cloud storage_path must be fetched over HTTP instead of read off
+    this machine's disk.
+    """
+    if storage_path.startswith("http://") or storage_path.startswith("https://"):
+        try:
+            import httpx
+            response = httpx.get(storage_path, timeout=10.0)
+            if response.status_code == 200:
+                return response.text
+        except Exception:
+            return None
+        return None
+    xml_path = storage_root / storage_path
+    if not xml_path.exists():
+        return None
+    try:
+        return xml_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
 def _ground_from_recent_hierarchy(db: Session, application_id: Optional[int], max_screens: int = 8) -> Optional[List[Dict[str, str]]]:
     """Best-effort grounding for AI generation: a SINGLE stored hierarchy is
     just one screen mid-flow (e.g. a checkout form) and is a poor proxy for
@@ -643,11 +756,11 @@ def _ground_from_recent_hierarchy(db: Session, application_id: Optional[int], ma
     elements = []
     seen = set()
     for row in rows:
-        xml_path = storage_root / row.storage_path
-        if not xml_path.exists():
+        xml_text = _read_hierarchy_text(row.storage_path, storage_root)
+        if xml_text is None:
             continue
         try:
-            nodes = parse_hierarchy(xml_path.read_text(encoding="utf-8"))
+            nodes = parse_hierarchy(xml_text)
         except Exception:
             continue
         for n in nodes:
@@ -673,6 +786,7 @@ async def generate_test(
     file: Optional[UploadFile] = File(None),
     application_id: Optional[int] = Form(None),
     device_id: Optional[int] = Form(None),
+    release_id: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     """AI-assisted draft generation from a natural-language objective, a pasted
@@ -700,18 +814,28 @@ async def generate_test(
             raise HTTPException(422, str(exc))
         objective_text = f"{objective_text}\n\n{extracted}".strip()
 
-    # Ground on the app's real Screen Map. If we don't have one yet and a
-    # device was given, crawl the app now so this generation is grounded —
-    # generic, one-time per APK build.
+    # Ground on the app's real Screen Map when one is already cached. A live
+    # crawl takes 1-3 minutes (Appium session + BFS over the app) — far too
+    # slow to run inline in front of a "Generating..." spinner, so on a cold
+    # app (no screen map yet) this falls back to the fast, DB-only grounding
+    # below and kicks the crawl off in the background instead, the same way
+    # POST /applications/{id}/explore does. The NEXT generation for this app
+    # then comes back fully grounded, for free.
     screen_map = _screen_map_for(db, application_id)
-    if screen_map is None and device_id and application_id:
+    if screen_map is None and device_id and application_id and not _autorun_possible(device_id):
+        # Only safe to crawl in the background when nothing else is about to
+        # claim this device — when autorun fires below, it reserves `device_id`
+        # itself moments later, and device_manager.reserve_device() rejects a
+        # second concurrent reservation rather than queuing it, so a crawl
+        # racing an autorun would just make the autorun fail with "device
+        # already reserved." When autorun IS about to run, that execution's
+        # own step-by-step hierarchy snapshots feed _ground_from_recent_hierarchy
+        # below for the next generation instead, so grounding still improves
+        # over time without needing a dedicated crawl here.
         version = _latest_valid_version(db, application_id)
         if version:
-            try:
-                from mobile.explorer import run_exploration
-                screen_map = run_exploration(version.id, device_id)
-            except Exception as exc:
-                logger.warning("Auto-exploration before generation failed (continuing ungrounded): %s", exc)
+            from mobile.explorer import run_exploration
+            threading.Thread(target=run_exploration, args=(version.id, device_id), daemon=True).start()
     grounding = None if screen_map else _ground_from_recent_hierarchy(db, application_id)
 
     from mobile.automatability import classify
@@ -749,6 +873,7 @@ async def generate_test(
         suite_id = _create_suite_and_run(
             db, name=name, application_id=application_id,
             device_id=device_id, source="NL_GENERATE", tests=[test],
+            release_id=release_id,
         )
 
     return {
@@ -825,12 +950,15 @@ def _autorun_possible(device_id: Optional[int]) -> bool:
 
 def _create_suite_and_run(
     db: Session, name: str, application_id: Optional[int], device_id: Optional[int], source: str, tests: List[MobileTest],
+    release_id: Optional[str] = None,
 ) -> int:
     """Groups already-created tests into a suite and kicks off run_suite() in
     the background. Shared by every bulk/auto-run creation path so 'upload
     tests, they just run, grouped in the dashboard' behaves identically no
     matter which upload format got them there. `device_id` may be None when
-    EMULATOR_AUTO_START is on — run_suite() provisions an emulator itself."""
+    EMULATOR_AUTO_START is on — run_suite() provisions an emulator itself.
+    `release_id` is optional and just passed through to run_suite, which
+    stamps it onto every execution the suite creates."""
     suite = MobileTestSuite(name=name, application_id=application_id, device_id=device_id, source=source)
     db.add(suite)
     db.commit()
@@ -840,7 +968,7 @@ def _create_suite_and_run(
     db.commit()
 
     from mobile.suite_engine import run_suite
-    threading.Thread(target=run_suite, args=(suite.id,), daemon=True).start()
+    threading.Thread(target=run_suite, args=(suite.id, release_id), daemon=True).start()
     return suite.id
 
 
@@ -956,6 +1084,7 @@ def create_execution(
         device_id=device.id if device else None,
         environment=payload.environment,
         status="QUEUED",
+        release_uuid=payload.release_id,
         environment_snapshot={
             "execution_policy": policy.dict(),
             "data_set": payload.data_set or {},
@@ -977,6 +1106,7 @@ def _execution_out(db: Session, execution: MobileExecution) -> dict:
         "status": execution.status,
         "test_id": execution.test_id,
         "device_id": execution.device_id,
+        "environment": execution.environment,
         "started_at": execution.started_at.isoformat() if execution.started_at else None,
         "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
         "duration_ms": execution.duration_ms,
@@ -1185,9 +1315,22 @@ def get_execution_evidence(execution_id: int, scope: Optional[str] = Depends(sco
 @router.get("/healing/history", response_model=List[HealingRecordOut])
 def healing_history(
     test_id: Optional[int] = None, execution_id: Optional[int] = None,
+    scope: Optional[str] = Depends(scope_project),
     db: Session = Depends(get_db),
 ):
     q = db.query(MobileHealingRecord)
+    if scope:
+        # Same anchor every other list endpoint in this file uses: a healing
+        # record has no project column of its own, so it's scoped through
+        # test_id -> application_id -> project_uuid. Needed once this became
+        # a consolidated cross-project view (see /app/healing) rather than
+        # only ever opened for one execution/test the caller already owns.
+        scoped_test_ids = (
+            db.query(MobileTest.id)
+            .filter(MobileTest.application_id.in_(_scoped_application_ids(db, scope)))
+            .scalar_subquery()
+        )
+        q = q.filter(MobileHealingRecord.test_id.in_(scoped_test_ids))
     if test_id:
         q = q.filter(MobileHealingRecord.test_id == test_id)
     if execution_id:
@@ -1198,23 +1341,34 @@ def healing_history(
 @router.post("/healing/{healing_id}/approve")
 def approve_healing(
     healing_id: int, background_tasks: BackgroundTasks,
+    payload: Optional[HealingManualFixRequest] = None,
     db: Session = Depends(get_db),
 ):
+    """Despite the URL, this is not an AutoHeal approval step — AutoHeal
+    (healing/policy.py's decide()) already applies any fix it finds on its
+    own, automatically, mid-run. This endpoint only ever does anything for a
+    REQUIRES_REVIEW record — the genuine dead-end where the engine found NO
+    candidate locator at all — and its job there is "retry with a locator a
+    person supplies," not "approve a fix that already exists."
+    """
     record = db.get(MobileHealingRecord, healing_id)
     if not record:
         raise HTTPException(404, "Healing record not found.")
     if record.status not in ("PENDING_APPROVAL", "REQUIRES_REVIEW"):
         raise HTTPException(409, f"Healing record is in status '{record.status}', not awaiting approval.")
 
-    # replacement_locator is only pre-populated on the AUTO_APPLY path; a human
-    # approving a PENDING_APPROVAL/REQUIRES_REVIEW record is authorizing the
-    # top-scored candidate the engine already surfaced (never a locator we
-    # invent here — it must be one of the candidates that was actually shown).
+    # replacement_locator/candidate_locators are only ever populated when the
+    # engine itself found something — in which case AutoHeal already applied
+    # it automatically and this record would not still be REQUIRES_REVIEW.
+    # So in practice this branch is always empty here; the real fix source
+    # for a REQUIRES_REVIEW record is the locator a person supplies below.
     approved_locator = record.replacement_locator or (
         record.candidate_locators[0]["locator"] if record.candidate_locators else None
     )
+    if not approved_locator and payload and payload.locator:
+        approved_locator = payload.locator.dict()
     if not approved_locator:
-        raise HTTPException(422, "Healing record has no candidate locator to apply.")
+        raise HTTPException(422, "No candidate locator available. Supply one in `locator` to retry with it.")
 
     record.replacement_locator = approved_locator
     record.status = "APPROVED"

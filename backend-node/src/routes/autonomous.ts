@@ -7,7 +7,7 @@ const router = Router();
 
 // POST /api/v1/autonomous/run
 router.post('/run', async (req: AuthRequest, res) => {
-  const { targetUrl, credentials, depth, features, projectId, mode, customScenario, rawScenario, browsers, enableAiEyes, antiBot } = req.body;
+  const { targetUrl, credentials, depth, features, projectId, mode, customScenario, rawScenario, browsers, enableAiEyes, antiBot, releaseId } = req.body;
 
   console.log("AUTONOMOUS TARGET:", targetUrl);
 
@@ -67,6 +67,7 @@ router.post('/run', async (req: AuthRequest, res) => {
           testName: `Auto-QA [${browserLower}]`,
           targetUrl,
           description: rawScenario || 'Full autonomous exploration (no custom scenario provided)',
+          ...(releaseId ? { releaseId } : {}),
         })
         .select()
         .single();

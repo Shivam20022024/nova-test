@@ -184,12 +184,20 @@ router.get('/:id/plan', async (req: AuthRequest, res) => {
 
 // POST /api/v1/executions/run
 router.post('/run', async (req: AuthRequest, res) => {
-  const { testName, suiteId, targetUrl, instruction, browser } = req.body;
+  const { testName, suiteId, targetUrl, instruction, browser, testType, releaseId } = req.body;
 
   try {
     const { data: execution, error } = await supabase
       .from('ExecutionLog')
-      .insert({ suiteId, status: 'QUEUED', browser: browser || 'chromium' })
+      // testType (smoke/sanity/regression/e2e/functional — integration plan
+      // Phase 4) and releaseId (which named release this run counts
+      // towards) are both optional; omitting either leaves this row exactly
+      // as it always was.
+      .insert({
+        suiteId, status: 'QUEUED', browser: browser || 'chromium',
+        ...(testType ? { testType } : {}),
+        ...(releaseId ? { releaseId } : {}),
+      })
       .select()
       .single();
     if (error) throw error;
@@ -252,7 +260,7 @@ router.post('/run-excel', upload.single('file'), async (req: AuthRequest, res) =
 
 // POST /api/v1/executions/run-multi-test
 router.post('/run-multi-test', async (req: AuthRequest, res) => {
-  const { test_name, base_url, steps, browsers, devices, project_id, suite_id, excel_testcase_ids, antiBot } = req.body;
+  const { test_name, base_url, steps, browsers, devices, project_id, suite_id, excel_testcase_ids, antiBot, test_type, release_id } = req.body;
 
   if (excel_testcase_ids && excel_testcase_ids.length > 0) {
      console.log('EXCEL_EXECUTION_REQUEST', req.body);
@@ -280,7 +288,7 @@ router.post('/run-multi-test', async (req: AuthRequest, res) => {
       if (!suite) {
         const { data: created, error: createErr } = await supabase
           .from('TestSuite')
-          .insert({ name: 'Default Suite', projectId: project_id })
+          .insert({ name: 'Default Suite', projectId: project_id, ...(test_type ? { testType: test_type } : {}) })
           .select()
           .single();
         if (createErr) throw createErr;
@@ -350,6 +358,8 @@ router.post('/run-multi-test', async (req: AuthRequest, res) => {
             description: isExcelCase ? tc.name : (steps ? JSON.stringify(steps) : null),
             excelBatchId: isExcelCase ? excelBatchId : null,
             excelBatchName: isExcelCase ? excelBatchName : null,
+            ...(test_type ? { testType: test_type } : {}),
+            ...(release_id ? { releaseId: release_id } : {}),
           })
           .select()
           .single();
@@ -405,7 +415,7 @@ router.post('/run-multi-test', async (req: AuthRequest, res) => {
 // Dedicated route for API/HTTP test execution — deliberately separate from
 // run-multi-test so the browsers-required validation there is never touched.
 router.post('/run-api-test', async (req: AuthRequest, res) => {
-  const { test_name, project_id, suite_id, steps, environment, variables } = req.body;
+  const { test_name, project_id, suite_id, steps, environment, variables, test_type, release_id } = req.body;
 
   if (!steps) {
     return res.status(400).json({ error: 'steps (HTTP request definitions) are required' });
@@ -425,7 +435,7 @@ router.post('/run-api-test', async (req: AuthRequest, res) => {
       if (!suite) {
         const { data: created, error: createErr } = await supabase
           .from('TestSuite')
-          .insert({ name: 'Default API Suite', projectId: project_id, type: 'API' })
+          .insert({ name: 'Default API Suite', projectId: project_id, type: 'API', ...(test_type ? { testType: test_type } : {}) })
           .select()
           .single();
         if (createErr) throw createErr;
@@ -446,6 +456,8 @@ router.post('/run-api-test', async (req: AuthRequest, res) => {
         testName: test_name || 'API Test',
         targetUrl: null,
         description: typeof steps === 'string' ? steps : JSON.stringify(steps),
+        ...(test_type ? { testType: test_type } : {}),
+        ...(release_id ? { releaseId: release_id } : {}),
       })
       .select()
       .single();

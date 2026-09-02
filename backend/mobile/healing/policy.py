@@ -47,6 +47,24 @@ def decide(
     confidence = float(top["score"])
     notes = []
 
+    # A candidate list is never empty just because nothing good was found —
+    # generate_candidates() scores every element on screen and returns
+    # whatever ranks highest, even if that's a barely-related node (a stray
+    # few points from weak fuzzy text/token overlap). Auto-applying on mere
+    # non-emptiness silently "heals" onto the wrong element and reports
+    # PASSED — worse than a real failure, since it hides the actual break
+    # and surfaces as a confusing failure somewhere later instead. This is
+    # the confidence-threshold gate engine.py's own comment above already
+    # says every candidate must clear; below it, this is honestly the same
+    # as finding nothing, so it's reported the same way. Applies to every
+    # app/screen/candidate — nothing here is specific to any one of them.
+    if confidence < policy.review_threshold:
+        return PolicyDecision(
+            "REQUIRES_REVIEW", confidence,
+            f"Best healing candidate scored {confidence:.1f}, below the confidence floor "
+            f"({policy.review_threshold:.1f}) needed to trust an auto-applied fix — treating as no viable candidate.",
+        )
+
     if len(candidates) > 1:
         runner_up = candidates[1]["score"]
         if (confidence - runner_up) < AMBIGUITY_MARGIN and confidence < 99.5:

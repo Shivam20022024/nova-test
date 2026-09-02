@@ -59,14 +59,29 @@ Each step object:
 - locator: null, or {{"strategy": one of ["resource_id","accessibility_id","text","semantic"], "value": string, "hint": string}}
     * "semantic" means "find this by its human description" — always allowed, and the safest
       choice when you are not certain of an exact identifier. Put the description in BOTH value and hint.
-- value: string or null — text to type (use the given test data verbatim), or a WAIT duration in ms
+- value: string or null — text to type (use the given test data verbatim), or a WAIT duration in
+  ms. NEVER put an assertion's expected value here — that always goes in `expected` below, even
+  for ASSERT_TEXT. `value` is exclusively for actions that supply/type data.
 - timeout_ms: integer (default 8000)
 - risk: one of ["LOW_RISK","MEDIUM_RISK","HIGH_RISK","CRITICAL"] — CRITICAL for irreversible
   actions (payments, transfers, deletions)
-- expected: string or null — for ASSERT_* steps, what you expect to be true
+- expected: string or null — REQUIRED for every ASSERT_* step, and it is what the executor
+  literally compares against, so its shape depends on the assertion:
+    * ASSERT_VISIBLE, ASSERT_NOT_VISIBLE, ASSERT_ENABLED, ASSERT_DISABLED, ASSERT_SELECTED,
+      ASSERT_CHECKED: the string "true" or "false".
+    * ASSERT_TEXT: the EXACT text (or content-description) the element must equal — e.g. "1",
+      "Sauce Labs Backpack", "$ 29.99". Never "true"/"false" here; the executor does a literal
+      string comparison against this value, and would compare against the literal word "true"
+      if that is what you put here.
+    * ASSERT_ACTIVITY: the activity name (or a recognizable fragment of it).
+  Non-assertion actions (LAUNCH, TAP, ENTER_TEXT, WAIT, ...) leave `expected` null.
 
 Hard rules:
 - Start every test with a LAUNCH step.
+- Only emit steps that are a direct, necessary consequence of the objective. Do not add
+  exploratory or "just in case" taps, menu opens, or extra verifications the objective never
+  asked for — every unrequested step is a place the test can fail for a reason the person who
+  wrote the objective never intended.
 - If a Screen Map is given: you may ONLY use a resource_id / accessibility_id / text value that
   literally appears in it. Anything else MUST use strategy "semantic". Never invent an identifier.
 - Include the real navigation. If the target screen's "reach" path in the map is
@@ -93,6 +108,12 @@ _PLACEHOLDER_RX = __import__("re").compile(
 _EDITABLE_OK_STRATEGIES = {"resource_id", "accessibility_id", "semantic", "xpath"}
 _TEXT_ENTRY_ACTIONS = {"ENTER_TEXT", "REPLACE_TEXT", "APPEND_TEXT", "CLEAR_TEXT", "DELETE_TEXT"}
 _NOOP_ACTIONS = {"WAIT"}
+# Assertions the executor compares against a literal free-text `expected` value
+# (mobile/actions.py's _assert_text/_assert_activity/_assert_attribute), as
+# opposed to ASSERT_VISIBLE-style booleans. Generic across every app: these are
+# the action names, not any particular app's screens or copy.
+_FREE_TEXT_ASSERTIONS = {"ASSERT_TEXT", "ASSERT_ACTIVITY", "ASSERT_ATTRIBUTE"}
+_BOOLEAN_RX = __import__("re").compile(r"^\s*(true|false)\s*$", __import__("re").IGNORECASE)
 
 
 def _sanitize_steps(step_dicts: List[Dict[str, Any]], warnings: List[str]) -> List[Dict[str, Any]]:
@@ -129,6 +150,26 @@ def _sanitize_steps(step_dicts: List[Dict[str, Any]], warnings: List[str]) -> Li
                 loc = {"strategy": "semantic", "value": seed, "hint": seed or "the target input field"}
 
             s["locator"] = loc
+
+        if action in _FREE_TEXT_ASSERTIONS:
+            expected, value = s.get("expected"), s.get("value")
+            expected_is_boolean = expected is None or _BOOLEAN_RX.match(str(expected))
+            value_has_real_text = isinstance(value, str) and value.strip() and not _BOOLEAN_RX.match(value)
+            if expected_is_boolean and value_has_real_text:
+                # The model put the actual value to compare against in `value`
+                # (its natural home for TAP/ENTER_TEXT) and left `expected` as a
+                # generic true/false — but the executor always reads `expected`
+                # for these assertions (mobile/actions.py's _expected_value()
+                # prefers it), so left alone this step would compare the live
+                # element against the literal word "true"/"false" and fail no
+                # matter what the app actually shows. Same fix regardless of
+                # which app or scenario produced it.
+                warnings.append(
+                    f"Step {i} ({action}): expected value {value!r} was in `value` instead of "
+                    f"`expected` — corrected so the assertion compares against the real value."
+                )
+                s["expected"] = value
+                s["value"] = None
 
         if action in _NOOP_ACTIONS:
             raw = str(s.get("value") or "").strip()

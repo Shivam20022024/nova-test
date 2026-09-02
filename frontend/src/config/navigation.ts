@@ -1,18 +1,32 @@
 /**
  * Sidebar structure. Every entry here points at a screen backed by a real
  * endpoint on `backend-node` — nothing is listed that cannot load data.
+ *
+ * Web Testing and Application Testing are two equally-weighted verticals,
+ * each ordered to match the sequence a run actually goes through (discover
+ * the app / upload the build -> author tests -> configure the environment ->
+ * execute -> review results). Dashboard, AutoHeal and Reports sit outside
+ * both verticals because they're cross-cutting: you check them across every
+ * run regardless of which vertical produced it, so splitting them per
+ * vertical would mean checking two places for "did anything fail."
  */
 export type NavIconKey =
   | 'command-center'
-  | 'one-click-test'
-  | 'code-generator'
   | 'projects'
   | 'application'
+  | 'one-click-test'
+  | 'code-generator'
   | 'tests'
-  | 'mobile'
   | 'executions'
+  | 'mobile-apps'
+  | 'mobile-devices'
+  | 'mobile-author'
+  | 'mobile-executions'
+  | 'compatibility'
   | 'healing'
   | 'reports'
+  | 'release-readiness'
+  | 'release-comparison'
   | 'integrations'
   | 'settings'
 
@@ -30,29 +44,39 @@ export type NavGroup = {
 export const navGroups: NavGroup[] = [
   {
     label: null,
-    items: [{ label: 'Command Center', href: '/app/command-center', icon: 'command-center' }],
-  },
-  {
-    label: 'Create',
     items: [
-      { label: 'One-Click Test', href: '/app/one-click-test', icon: 'one-click-test' },
-      { label: 'Code Generator', href: '/app/code-generator', icon: 'code-generator' },
+      { label: 'Command Center', href: '/app/command-center', icon: 'command-center' },
+      { label: 'Projects', href: '/app/projects', icon: 'projects' },
     ],
   },
   {
-    label: 'Quality',
+    label: 'Web Testing',
     items: [
-      { label: 'Projects', href: '/app/projects', icon: 'projects' },
-      { label: 'Application', href: '/app/application', icon: 'application' },
-      { label: 'Tests', href: '/app/tests', icon: 'tests' },
-      { label: 'Mobile', href: '/app/mobile', icon: 'mobile' },
+      { label: 'App Discovery', href: '/app/application', icon: 'application' },
+      { label: 'Author Tests', href: '/app/one-click-test', icon: 'one-click-test' },
+      { label: 'Code Generator', href: '/app/code-generator', icon: 'code-generator' },
+      { label: 'Test Suites', href: '/app/tests', icon: 'tests' },
       { label: 'Executions', href: '/app/execution', icon: 'executions' },
-      { label: 'AutoHeal', href: '/app/healing', icon: 'healing' },
+    ],
+  },
+  {
+    label: 'Application Testing',
+    items: [
+      { label: 'Apps', href: '/app/mobile/apps', icon: 'mobile-apps' },
+      { label: 'Devices', href: '/app/mobile/devices', icon: 'mobile-devices' },
+      { label: 'Author Tests', href: '/app/mobile/author', icon: 'mobile-author' },
+      { label: 'Executions', href: '/app/mobile/executions', icon: 'mobile-executions' },
+      { label: 'Compatibility', href: '/app/mobile/compatibility', icon: 'compatibility' },
     ],
   },
   {
     label: 'Intelligence',
-    items: [{ label: 'Reports', href: '/app/reports', icon: 'reports' }],
+    items: [
+      { label: 'AutoHeal', href: '/app/healing', icon: 'healing' },
+      { label: 'Reports', href: '/app/reports', icon: 'reports' },
+      { label: 'Release Readiness', href: '/app/reports/release-readiness', icon: 'release-readiness' },
+      { label: 'Compare Releases', href: '/app/reports/release-comparison', icon: 'release-comparison' },
+    ],
   },
   {
     label: 'Platform',

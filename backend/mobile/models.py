@@ -202,6 +202,12 @@ class MobileExecution(Base):
     compatibility_run_id = Column(Integer, ForeignKey("mobile_compatibility_runs.id", ondelete="SET NULL"), nullable=True)
     suite_id = Column(Integer, ForeignKey("mobile_test_suites.id", ondelete="SET NULL"), nullable=True)
 
+    # Loose reference to the web-side "Release" table's id (a uuid, stored as
+    # text) — same soft-reference pattern as MobileApplication.project_id:
+    # written and read, never enforced as a real FK, since Release lives in
+    # a different schema/codebase (backend-node/Supabase) than this table.
+    release_uuid = Column(String(36), nullable=True)
+
     # Where in the suite's one continuous recording this execution's steps
     # actually happened — lets a per-test video be cut from the master
     # recording after the fact instead of running a second concurrent

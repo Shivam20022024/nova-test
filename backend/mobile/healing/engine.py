@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from mobile.healing import memory as locator_memory
 from mobile.healing.candidate_generator import generate_candidates, node_to_best_locator
 from mobile.healing.policy import PolicyDecision, decide
-from mobile.healing.validator import validate_candidate_pre_execution, validate_post_execution
+from mobile.healing.validator import validate_post_execution
 from mobile.locators import ElementNode, capture_hierarchy_xml, element_attributes_snapshot, parse_hierarchy
 from mobile.models import MobileHealingRecord
 from mobile.schemas import HealingPolicy, Locator
@@ -58,39 +58,34 @@ def analyze(
     xml = capture_hierarchy_xml(driver)
     nodes = parse_hierarchy(xml)
 
+    # A cached "this locator healed to X before" is strong evidence, not proof
+    # — the scorer already has dedicated weights for it (historical_locator_
+    # reuse / historically_successful_before in scorer.py), sized so a perfect
+    # historical match adds up to +55, not an automatic top score. This used
+    # to short-circuit straight to a hardcoded 99.0 the moment ANY memory row
+    # existed, skipping the scorer (and therefore skipping the confidence
+    # floor in policy.py) entirely: one wrong heal — a low-confidence guess
+    # that happened to pass its shallow "app didn't crash" pre-execution
+    # check — got memorized as a "successful" locator and then silently
+    # reapplied at near-100% confidence forever after, on every future run,
+    # for any app, regardless of whether the cached element still made any
+    # sense. Routing it through generate_candidates() like every other
+    # candidate means history is one more signal the real element has to earn
+    # its score with, not a bypass around scoring altogether.
     used_memory_shortcut = False
-    candidates: List[Dict[str, Any]] = []
     memory_row = None
-
     if application_id and package_name:
         memory_row = locator_memory.find_by_original_locator(db, application_id, package_name, original_locator)
 
-    if memory_row is not None:
-        try:
-            historical_candidate = Locator(**memory_row.successful_locator)
-        except Exception:
-            historical_candidate = None
-        if historical_candidate is not None:
-            check = validate_candidate_pre_execution(driver, historical_candidate, requires_interactive)
-            if check.valid:
-                candidates = [{
-                    "locator": historical_candidate.dict(),
-                    "score": 99.0,
-                    "signals": {"historical_locator_reuse": True, "healing_count": memory_row.healing_count},
-                    "element_attributes": memory_row.element_attributes,
-                }]
-                used_memory_shortcut = True
-
-    if not candidates:
-        historical_locator_dict = memory_row.successful_locator if memory_row else None
-        candidates = generate_candidates(
-            nodes=nodes,
-            original_locator=original_locator,
-            hint=original_locator.hint,
-            requires_interactive=requires_interactive,
-            historical_locator=historical_locator_dict,
-            historically_successful_before=bool(memory_row and memory_row.healing_count > 0),
-        )
+    historical_locator_dict = memory_row.successful_locator if memory_row else None
+    candidates = generate_candidates(
+        nodes=nodes,
+        original_locator=original_locator,
+        hint=original_locator.hint,
+        requires_interactive=requires_interactive,
+        historical_locator=historical_locator_dict,
+        historically_successful_before=bool(memory_row and memory_row.healing_count > 0),
+    )
 
     # Last resort, section 57: "use OpenAI only if deterministic evidence is
     # insufficient" — never the first-line classifier. The AI's opinion is

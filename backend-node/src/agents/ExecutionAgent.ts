@@ -104,6 +104,29 @@ export class ExecutionAgent {
     page.on('console', (msg: any) => emitLog('browser_log', `Console [${msg.type()}]: ${msg.text()}`));
     page.on('pageerror', (error: any) => emitLog('browser_log', `Page Error: ${error.message}`));
 
+    // JS dialog handling (alert/confirm/prompt). With no listener at all,
+    // Playwright auto-dismisses these on its own — so a test written before
+    // this existed already saw dialogs silently go away, and dismiss stays
+    // the default below. This only adds the ability for a step to arm the
+    // NEXT dialog to be accepted (optionally with typed text) via the new
+    // `handleDialog` action, for tests that need to interact with one on
+    // purpose.
+    let pendingDialogAction: { accept: boolean; promptText?: string } | null = null;
+    page.on('dialog', async (dialog: any) => {
+      const instruction = pendingDialogAction;
+      pendingDialogAction = null;
+      emitLog('browser_log', `JS dialog appeared [${dialog.type()}]: ${dialog.message()}`);
+      try {
+        if (instruction && instruction.accept) {
+          await dialog.accept(instruction.promptText);
+        } else {
+          await dialog.dismiss();
+        }
+      } catch (e) {
+        // Dialog may already have been handled/closed — not fatal.
+      }
+    });
+
     let screenshotUrl: string | null = null;
     let videoUrl: string | null = null;
     let success = false;
@@ -177,7 +200,7 @@ export class ExecutionAgent {
          }
       });
       
-      const validActions = ['goto', 'fill', 'click', 'assertVisible', 'assertText', 'select', 'hover', 'wait', 'screenshot', 'consoleCapture', 'log'];
+      const validActions = ['goto', 'fill', 'click', 'assertVisible', 'assertText', 'select', 'hover', 'wait', 'screenshot', 'consoleCapture', 'log', 'dragAndDrop', 'handleDialog'];
       for (let i = 0; i < actions.length; i++) {
         if (!actions[i].action && actions[i].type) {
           actions[i].action = actions[i].type;
@@ -211,7 +234,7 @@ export class ExecutionAgent {
               }
            }
         }
-        if (['click', 'fill', 'select'].includes(actions[i].action) && !actions[i].selector) {
+        if (['click', 'fill', 'select', 'dragAndDrop'].includes(actions[i].action) && !actions[i].selector) {
            console.warn(`Malformed step at index ${i}: action "${actions[i].action}" missing "selector"`);
            actions[i] = { action: 'log', message: `SKIPPED: action "${actions[i].action}" missing selector` };
            continue;
@@ -288,9 +311,21 @@ export class ExecutionAgent {
         
         const getPlaywrightLocator = (page: any, sel: string) => {
           if (!sel) return null;
+          // Frame targeting: when a step sets `frameSelector`, resolve
+          // against that iframe's content instead of the top-level page.
+          // Absent frameSelector (every existing test/action), `root` is
+          // just `page` — identical to before this existed.
+          //
+          // Shadow DOM note: Playwright's locator engines already pierce
+          // OPEN shadow roots on their own, so `root.locator(sel)` below
+          // works inside an open shadow tree with no special handling
+          // needed. A CLOSED shadow root is a browser-level lock nothing
+          // (Playwright or otherwise) can open from outside — a genuine
+          // limitation, not a gap in this code.
+          const root = action.frameSelector ? page.frameLocator(action.frameSelector) : page;
           if (sel.startsWith('locator(') || sel.startsWith('getByRole(') || sel.startsWith('getByLabel(') || sel.startsWith('getByTestId(') || sel.startsWith('getByText(') || sel.startsWith('getByPlaceholder(')) {
              try {
-               return new Function('page', `return page.${sel}.first()`)(page);
+               return new Function('page', `return page.${sel}.first()`)(root);
              } catch (e: any) {
                if (e instanceof SyntaxError && e.message.includes('Invalid regular expression')) {
                   let sanitizedSel = sel;
@@ -306,7 +341,7 @@ export class ExecutionAgent {
                   });
                   if (sanitizedSel !== sel) {
                      try {
-                        return new Function('page', `return page.${sanitizedSel}.first()`)(page);
+                        return new Function('page', `return page.${sanitizedSel}.first()`)(root);
                      } catch (e2) {
                         console.warn(`[ExecutionAgent] Failed evaluating sanitized Playwright selector ${sanitizedSel}`, e2);
                      }
@@ -315,7 +350,7 @@ export class ExecutionAgent {
                console.warn(`[ExecutionAgent] Failed evaluating Playwright selector ${sel}`, e);
              }
           }
-          return page.locator(sel).first();
+          return root.locator(sel).first();
         };
         
         const rawSelector = action.selector || action.url;
@@ -327,6 +362,8 @@ export class ExecutionAgent {
         else if (action.action === 'assertVisible') details = `Asserting visibility of ${action.selector}`;
         else if (action.action === 'select') details = `Selecting option in ${action.selector}`;
         else if (action.action === 'hover') details = `Hovering over ${action.selector}`;
+        else if (action.action === 'dragAndDrop') details = `Dragging ${action.selector} to ${action.targetSelector || action.destinationSelector}`;
+        else if (action.action === 'handleDialog') details = `Arming next JS dialog handler`;
         else if (action.action === 'wait') details = action.state === 'domcontentloaded' ? 'Waiting for DOMContentLoaded' : `Waiting for ${action.timeout || action.value || 1000}ms`;
         else if (action.action === 'screenshot') details = `Taking screenshot`;
         else if (action.action === 'consoleCapture') details = `Capturing console logs`;
@@ -663,6 +700,31 @@ export class ExecutionAgent {
                 await loc.scrollIntoViewIfNeeded();
                 await loc.waitFor({ state: 'visible', timeout: currentTimeout });
                 await loc.hover({ timeout: currentTimeout });
+                break;
+              }
+              case 'dragAndDrop': {
+                const targetSelector = action.targetSelector || action.destinationSelector;
+                if (!targetSelector) {
+                  throw new Error(`INVALID_ACTION_TARGET: dragAndDrop requires a "targetSelector" (or "destinationSelector") in addition to "selector".`);
+                }
+                await runDomValidation(action.selector);
+                const sourceLoc = getPlaywrightLocator(page, action.selector);
+                await waitForLocatorAttached(sourceLoc, action.selector);
+                const targetLoc = getPlaywrightLocator(page, targetSelector);
+                await waitForLocatorAttached(targetLoc, targetSelector);
+                await sourceLoc.scrollIntoViewIfNeeded();
+                await sourceLoc.dragTo(targetLoc, { timeout: currentTimeout });
+                break;
+              }
+              case 'handleDialog': {
+                // Arms the NEXT alert/confirm/prompt to be accepted (default)
+                // or dismissed, optionally with text typed into a prompt().
+                // The actual browser event is handled by the page.on('dialog')
+                // listener registered above, not here — dialogs fire
+                // asynchronously mid-action, so there is nothing to await.
+                const accept = action.accept !== false;
+                pendingDialogAction = { accept, promptText: action.value };
+                emitLog('browser_log', `Armed next JS dialog to be ${accept ? 'accepted' : 'dismissed'}${action.value ? ` with text "${action.value}"` : ''}.`);
                 break;
               }
               case 'log':
@@ -1024,30 +1086,73 @@ export class ExecutionAgent {
       if (frameInterval) clearInterval(frameInterval);
       
       let visualRegressionData: string | null = null;
-      if (options.enableAiEyes && !page.isClosed()) {
+      const wantsAiEyes = !!options.enableAiEyes;
+      const wantsVisualBaseline = !!options.enableVisualBaseline;
+      if ((wantsAiEyes || wantsVisualBaseline) && !page.isClosed()) {
+        let finalScreenshotData: Buffer | null = null;
         try {
-          emitLog('agent_log', 'Running VisualRegressionAgent (AI Eyes)...');
           const finalScreenshotPath = `./temp/screenshots/${executionId}_final.png`;
           await page.screenshot({ path: finalScreenshotPath, fullPage: true });
-          
           if (fsSync.existsSync(finalScreenshotPath)) {
-            const fileData = await fs.readFile(finalScreenshotPath);
-            const base64Image = fileData.toString('base64');
+            finalScreenshotData = await fs.readFile(finalScreenshotPath);
+          }
+        } catch (e: any) {
+          emitLog('agent_log', `Final screenshot capture failed: ${e.message}`);
+        }
+
+        // Both sub-checks below are additional SIGNALS, exactly like the
+        // pre-existing AI Eyes behavior they sit alongside: neither ever
+        // flips the overall execution's pass/fail — they only add a step
+        // and a data point. A test that doesn't opt into either sees no
+        // change at all (both flags default off).
+        let aiEyesResult: { hasVisualBugs: boolean; issues: string[] } | null = null;
+        let baselineResult: import('./VisualRegressionAgent').VisualBaselineResult | null = null;
+
+        if (finalScreenshotData && wantsAiEyes) {
+          try {
+            emitLog('agent_log', 'Running VisualRegressionAgent (AI Eyes)...');
+            const base64Image = finalScreenshotData.toString('base64');
             const { VisualRegressionAgent } = await import('./VisualRegressionAgent');
             const visualAgent = new VisualRegressionAgent(executionId);
-            const visualResult = await visualAgent.analyzeScreenshot(base64Image);
-            visualRegressionData = JSON.stringify(visualResult);
-            if (visualResult.hasVisualBugs) {
-                emitLog('agent_log', `AI Eyes detected visual bugs: ${visualResult.issues.join(', ')}`);
-                addStep('AI_EYES', 'FAILED', 0, `Visual bugs detected: ${visualResult.issues.join(', ')}`);
+            aiEyesResult = await visualAgent.analyzeScreenshot(base64Image);
+            if (aiEyesResult.hasVisualBugs) {
+                emitLog('agent_log', `AI Eyes detected visual bugs: ${aiEyesResult.issues.join(', ')}`);
+                addStep('AI_EYES', 'FAILED', 0, `Visual bugs detected: ${aiEyesResult.issues.join(', ')}`);
             } else {
                 emitLog('agent_log', `AI Eyes found no visual bugs.`);
                 addStep('AI_EYES', 'PASSED', 0, 'No visual bugs detected.');
             }
+          } catch (e: any) {
+            emitLog('agent_log', `AI Eyes analysis failed: ${e.message}`);
+            console.error("AI Eyes processing failed", e);
           }
-        } catch (e: any) {
-          emitLog('agent_log', `AI Eyes analysis failed: ${e.message}`);
-          console.error("AI Eyes processing failed", e);
+        }
+
+        if (finalScreenshotData && wantsVisualBaseline) {
+          try {
+            emitLog('agent_log', 'Running visual baseline comparison...');
+            const { VisualRegressionAgent } = await import('./VisualRegressionAgent');
+            const visualAgent = new VisualRegressionAgent(executionId);
+            const baselineKey = options.visualBaselineKey || `${options.testName || 'untitled'}::${options.targetUrl || ''}`;
+            baselineResult = await visualAgent.compareAgainstBaseline(baselineKey, finalScreenshotData);
+            if (baselineResult.error) {
+              emitLog('agent_log', `Visual baseline comparison: ${baselineResult.error}`);
+              addStep('VISUAL_BASELINE', 'SKIPPED', 0, baselineResult.error);
+            } else if (!baselineResult.hasBaseline) {
+              emitLog('agent_log', "No prior baseline for this test — this run's screenshot is now the baseline.");
+              addStep('VISUAL_BASELINE', 'SKIPPED', 0, 'Baseline established from this run; nothing to compare yet.');
+            } else {
+              emitLog('agent_log', `Visual diff vs baseline: ${baselineResult.diffPercent}% of pixels changed.`);
+              addStep('VISUAL_BASELINE', baselineResult.passed ? 'PASSED' : 'FAILED', 0,
+                `${baselineResult.diffPercent}% pixel difference vs baseline (${baselineResult.mismatchedPixels}/${baselineResult.totalPixels} px).`);
+            }
+          } catch (e: any) {
+            emitLog('agent_log', `Visual baseline comparison failed: ${e.message}`);
+          }
+        }
+
+        if (aiEyesResult || baselineResult) {
+          visualRegressionData = JSON.stringify({ aiEyes: aiEyesResult, baseline: baselineResult });
         }
       }
 

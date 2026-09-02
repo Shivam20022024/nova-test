@@ -5,6 +5,7 @@ import fs from 'fs/promises';
 import * as fsSync from 'fs';
 import { supabase } from '../utils/storage';
 import { resolveFfmpegPath } from '../lib/ffmpeg';
+import { applyHealedSelectorToTestRun } from '../utils/healingPersistence';
 
 import { RequirementsAgent } from '../agents/RequirementsAgent';
 import { TestCaseAgent } from '../agents/TestCaseAgent';
@@ -20,7 +21,11 @@ import { OrchestratorAgent } from '../agents/OrchestratorAgent';
 import { ScenarioParserAgent } from '../agents/ScenarioParserAgent';
 import { JiraService } from '../services/JiraService';
 
-export const executionQueueName = 'test-executions';
+// Local dev runs use a separate queue name so they can never dequeue/collide
+// with jobs on the production 'test-executions' queue (both potentially
+// sharing the same Redis instance) — see commit "Isolate local test
+// execution queue".
+export const executionQueueName = process.env.NODE_ENV === 'production' ? 'test-executions' : 'test-executions-local';
 
 async function cleanupInterruptedJobs() {
   try {
@@ -359,6 +364,14 @@ export const initExecutionWorker = (io: any) => {
             {
               accessibility: job.data.features?.accessibility || false,
               security: job.data.features?.security || false,
+              // enableAiEyes was read from the request (routes/autonomous.ts)
+              // but never actually threaded through to here — the AI Eyes
+              // visual check has been unreachable in real runs. Wiring it up
+              // alongside the new visual-baseline flag below, same pattern
+              // as accessibility/security.
+              enableAiEyes: job.data.features?.aiEyes || job.data.enableAiEyes || false,
+              enableVisualBaseline: job.data.features?.visualBaseline || false,
+              testName: job.data.testName,
               sharedPage: sharedPage,
               targetUrl: job.data.targetUrl,
               credentials: (aggregatedExecResult as any).authMetadata || job.data.credentials,
@@ -959,6 +972,13 @@ export const initExecutionWorker = (io: any) => {
         
         logMsg(`[Cost Summary] LLM_CALL_COUNT=${llmCalls}, TOTAL_TOKENS=${totalTokens}, ESTIMATED_COST=$${estimatedCost.toFixed(4)}`);
 
+        // AutoHeal is fully automatic end to end: a heal that passed during
+        // this run is immediately written back into the saved TestRun.steps
+        // (via applyHealedSelectorToTestRun) so the next run of this same
+        // test starts from the fixed selector instead of re-healing it from
+        // scratch — no human approval step. HealingEvent stays as a
+        // read-only log of what AutoHeal did and whether the fix could be
+        // persisted (it can't for an ad-hoc run with no saved TestRun).
         for (let i = 0; i < finalStepLogs.length; i++) {
           const step = finalStepLogs[i];
           if (step.action === 'HEAL' && step.status === 'PASSED') {
@@ -970,14 +990,29 @@ export const initExecutionWorker = (io: any) => {
                }
             }
             if (originalSelector && step.rawSelector) {
+               let persisted = false;
+               try {
+                 persisted = await applyHealedSelectorToTestRun({
+                   suiteId: activeExecution?.suiteId,
+                   testName,
+                   stepIndex: i,
+                   originalSelector,
+                   healedSelector: step.rawSelector,
+                 });
+               } catch (persistErr) {
+                 console.error('Failed to persist healed selector to TestRun:', persistErr);
+               }
+               if (!persisted) {
+                 logMsg(`[AutoHeal] Healed step ${i} but could not find a saved TestRun to persist it into (likely an ad-hoc run) — the fix applied for this run only.`);
+               }
                await supabase.from('HealingEvent').insert({
                  executionLogId: executionId,
                  originalSelector: originalSelector,
                  healedSelector: step.rawSelector,
                  success: true,
-                 status: 'PENDING',
+                 status: 'APPLIED',
                  testName: testName,
-                 stepIndex: i
+                 stepIndex: i,
                }).then(({ error }) => { if (error) console.error("Failed to save HealingEvent:", error); });
             }
           }
@@ -993,29 +1028,6 @@ export const initExecutionWorker = (io: any) => {
           planData: job.data.planData || null,
           visualRegressionData: execResult.visualRegressionData || null
         }).eq('id', executionId);
-
-        // Extract Healing Events
-        try {
-          for (const step of finalStepLogs) {
-            if (step && step.self_healing_attempts && Array.isArray(step.self_healing_attempts)) {
-              const successfulHeal = step.self_healing_attempts.find((a: any) => a.success === true);
-              if (successfulHeal) {
-                await supabase.from('HealingEvent').insert({
-                  executionLogId: executionId,
-                  originalSelector: step.selector, // Note: This might be the healed one, depending on runner. We should save original.
-                  healedSelector: successfulHeal.candidate || '',
-                  success: true,
-                  status: 'PENDING',
-                  testName: testName,
-                  stepIndex: step.step
-                });
-                logMsg(`[Self-Healing] Recorded healing event for step ${step.step}`);
-              }
-            }
-          }
-        } catch (healErr) {
-          console.error("Failed to record healing events:", healErr);
-        }
 
         if (finalExecutionStatus === 'FAILED') {
            try {
