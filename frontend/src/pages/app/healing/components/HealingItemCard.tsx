@@ -1,19 +1,18 @@
 import { ArrowRight, CircleCheck, ExternalLink } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { Button } from '../../../../components/ui/Button'
 import { Card } from '../../../../components/ui/Card'
 import { StatusBadge } from '../../../../components/ui/StatusBadge'
 import type { HealingEvent } from '../../../../lib/types'
 
 type HealingItemCardProps = {
   item: HealingEvent
-  busy: boolean
-  onApprove: (id: string) => void
-  onReject: (id: string) => void
 }
 
-export function HealingItemCard({ item, busy, onApprove, onReject }: HealingItemCardProps) {
-  const isPending = item.status === 'PENDING'
+/** Read-only log entry — AutoHeal already applied and saved this fix by the
+ *  time it appears here, so there is nothing left to decide. 'PENDING' and
+ *  'REJECTED' only exist to render old rows saved before AutoHeal stopped
+ *  waiting for approval. */
+export function HealingItemCard({ item }: HealingItemCardProps) {
   const project = item.executionLog?.suite?.project?.name
   const suite = item.executionLog?.suite?.name
 
@@ -30,10 +29,8 @@ export function HealingItemCard({ item, busy, onApprove, onReject }: HealingItem
           </p>
         </div>
         <StatusBadge
-          status={
-            item.status === 'APPROVED' ? 'pass' : item.status === 'REJECTED' ? 'fail' : 'healing'
-          }
-          label={item.status === 'PENDING' ? 'Needs review' : item.status.toLowerCase()}
+          status={item.status === 'REJECTED' ? 'fail' : 'pass'}
+          label={item.status === 'REJECTED' ? 'Rejected' : 'Applied automatically'}
         />
       </div>
 
@@ -51,7 +48,7 @@ export function HealingItemCard({ item, busy, onApprove, onReject }: HealingItem
         {item.success && (
           <span className="flex items-center gap-1 text-pass">
             <CircleCheck size={12} aria-hidden="true" />
-            Replacement passed at run time
+            Applied and saved to the test
           </span>
         )}
         <span>{new Date(item.createdAt).toLocaleString()}</span>
@@ -63,27 +60,6 @@ export function HealingItemCard({ item, busy, onApprove, onReject }: HealingItem
           <ExternalLink size={11} aria-hidden="true" />
         </Link>
       </div>
-
-      {isPending && (
-        <div className="mt-3 flex flex-wrap items-center justify-end gap-2 border-t border-line pt-3">
-          {/* Approving is a write: the backend rewrites the healed selector into
-              the stored test steps, so future runs use it. */}
-          <p className="mr-auto text-xs text-muted">
-            Approving updates the saved test steps.
-          </p>
-          <Button
-            variant="outline"
-            marker={false}
-            disabled={busy}
-            onClick={() => onReject(item.id)}
-          >
-            Reject
-          </Button>
-          <Button marker={false} disabled={busy} onClick={() => onApprove(item.id)}>
-            {busy ? 'Saving…' : 'Approve'}
-          </Button>
-        </div>
-      )}
     </Card>
   )
 }

@@ -1,5 +1,5 @@
 import type { Status } from '../../../components/ui/StatusBadge'
-import type { MobileExecutionStatus } from '../../../lib/types'
+import type { MobileExecutionStatus, MobileSuite } from '../../../lib/types'
 
 /**
  * Maps the engine's 18 execution statuses onto the product's six semantic
@@ -52,6 +52,23 @@ export function statusLabel(status: MobileExecutionStatus | string | null | unde
     .split('_')
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(' ')
+}
+
+/**
+ * A suite's badge used to be "Completed" (green) the instant every test
+ * reached a terminal state, whether or not anything actually passed — a
+ * suite that was 0/1 passed, its one test blocked on an AutoHeal decision,
+ * still showed a green pass-styled "Completed" pill next to a fully red bar.
+ * This reads the real outcome instead: still running, a genuine failure, a
+ * test stuck without a verdict (never red — see the STATUS_MAP comment
+ * above), or an actual clean pass.
+ */
+export function suiteBadge(suite: Pick<MobileSuite, 'status' | 'test_count' | 'passed_count' | 'failed_count' | 'blocked_count'>): { status: Status; label: string } {
+  if (suite.status !== 'COMPLETED') return { status: 'running', label: 'Running' }
+  if (suite.failed_count > 0) return { status: 'fail', label: 'Failed' }
+  if (suite.blocked_count > 0) return { status: 'blocked', label: 'Needs review' }
+  if (suite.passed_count === suite.test_count && suite.test_count > 0) return { status: 'pass', label: 'Passed' }
+  return { status: 'blocked', label: 'Completed' }
 }
 
 export function formatDuration(ms: number | null | undefined): string {

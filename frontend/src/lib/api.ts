@@ -16,6 +16,7 @@ import type {
   MobileApplication,
   MobileBatchJob,
   MobileCapabilities,
+  MobileCompatibilityRun,
   MobileDevice,
   MobileDeviceHealth,
   MobileEvidenceItem,
@@ -23,12 +24,16 @@ import type {
   MobileGenerateResult,
   MobileHealingRecord,
   MobileImportResult,
+  MobileLocator,
   MobileSuite,
   MobileTest,
   MobileUploadResult,
   Project,
   QueuedRun,
   RecentExecutionItem,
+  Release,
+  ReleaseComparisonEntry,
+  ReleaseReadiness,
   TestCase,
   TestSuite,
 } from './types'
@@ -239,6 +244,36 @@ export const api = {
     )
   },
 
+  getReleaseReadiness(projectId?: string, windowSize: number = 20) {
+    const q = projectId ? `&projectId=${encodeURIComponent(projectId)}` : ''
+    return this.request<ReleaseReadiness>(
+      `/api/v1/dashboard/release-readiness?window=${windowSize}${q}`,
+    )
+  },
+
+  /* -- Releases ---------------------------------------------------------- */
+
+  listReleases(projectId?: string) {
+    const q = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
+    return this.request<Release[]>(`/api/v1/releases${q}`)
+  },
+
+  createRelease(payload: { projectId: string; name: string; description?: string }) {
+    return this.request<Release>('/api/v1/releases', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  },
+
+  deleteRelease(id: string) {
+    return this.request<null>(`/api/v1/releases/${id}`, { method: 'DELETE' })
+  },
+
+  compareReleases(releaseIds: string[]) {
+    const q = releaseIds.map(encodeURIComponent).join(',')
+    return this.request<ReleaseComparisonEntry[]>(`/api/v1/releases/compare?releaseIds=${q}`)
+  },
+
   /* -- Executions ------------------------------------------------------ */
 
   getExecutions(projectId?: string) {
@@ -275,6 +310,7 @@ export const api = {
     suite_id?: string | null
     excel_testcase_ids?: string[] | null
     antiBot?: unknown
+    release_id?: string | null
   }) {
     return this.request<QueuedRun>('/api/v1/executions/run-multi-test', {
       method: 'POST',
@@ -319,6 +355,7 @@ export const api = {
     rawScenario?: string | null
     enableAiEyes?: boolean
     antiBot?: unknown
+    releaseId?: string | null
   }) {
     return this.request<QueuedRun>('/api/v1/autonomous/run', {
       method: 'POST',
@@ -382,15 +419,6 @@ export const api = {
   getHealingEvents(status?: HealingEventStatus) {
     const q = status ? `?status=${status}` : ''
     return this.request<HealingEvent[]>(`/api/v1/healing${q}`)
-  },
-
-  /** Approving also rewrites the healed selector into the stored test steps. */
-  approveHealingEvent(id: string) {
-    return this.request<HealingEvent>(`/api/v1/healing/${id}/approve`, { method: 'POST' })
-  },
-
-  rejectHealingEvent(id: string) {
-    return this.request<HealingEvent>(`/api/v1/healing/${id}/reject`, { method: 'POST' })
   },
 
   /* -- Discovery (AppGraph) -------------------------------------------- */
@@ -482,10 +510,14 @@ export const api = {
     uploadApplication(file: File, projectUuid?: string) {
       const form = new FormData()
       form.append('file', file)
-      // Sent as a form field, not a query param, so the whole upload is one
-      // multipart body (the backend reads it with Form(None)).
-      if (projectUuid) form.append('project_uuid', projectUuid)
-      return api.request<MobileUploadResult>('/api/v1/mobile/applications', {
+      // Sent as a query param, matching how mobile/api.py's scope_project()
+      // dependency and backend-node's enforceProjectScope actually read it
+      // (both look at the query string, never at multipart form fields).
+      // A previous version of this sent project_uuid as a form field, which
+      // both of those silently ignored — the upload always "succeeded" but
+      // landed unscoped, so the app could never appear in any project's list.
+      const q = projectUuid ? `?project_uuid=${encodeURIComponent(projectUuid)}` : ''
+      return api.request<MobileUploadResult>(`/api/v1/mobile/applications${q}`, {
         method: 'POST',
         body: form,
       })
@@ -548,12 +580,14 @@ export const api = {
       file?: File
       applicationId?: number
       deviceId?: number
+      releaseId?: string
     }) {
       const form = new FormData()
       if (input.text) form.append('text', input.text)
       if (input.file) form.append('file', input.file)
       if (input.applicationId != null) form.append('application_id', String(input.applicationId))
       if (input.deviceId != null) form.append('device_id', String(input.deviceId))
+      if (input.releaseId) form.append('release_id', input.releaseId)
       return api.request<MobileGenerateResult>('/api/v1/mobile/tests/generate', {
         method: 'POST',
         body: form,
@@ -629,19 +663,22 @@ export const api = {
 
     /* Compatibility runs — one test across several devices at once. */
     listCompatibilityRuns(limit = 20) {
-      return api.request<Array<Record<string, unknown>>>(
+      return api.request<MobileCompatibilityRun[]>(
         `/api/v1/mobile/compatibility-runs?limit=${limit}`,
       )
     },
+    getCompatibilityRun(id: number) {
+      return api.request<MobileCompatibilityRun>(`/api/v1/mobile/compatibility-runs/${id}`)
+    },
     createCompatibilityRun(payload: { test_id: number; device_ids: number[]; environment?: string }) {
-      return api.request<Record<string, unknown>>('/api/v1/mobile/compatibility-runs', {
+      return api.request<MobileCompatibilityRun>('/api/v1/mobile/compatibility-runs', {
         method: 'POST',
         body: JSON.stringify({ environment: 'DEV', ...payload }),
       })
     },
 
     /* AutoHeal */
-    getHealingHistory(params: { test_id?: number; execution_id?: number } = {}) {
+    getHealingHistory(params: { test_id?: number; execution_id?: number; project_uuid?: string } = {}) {
       const qs = new URLSearchParams(
         Object.entries(params)
           .filter(([, v]) => v != null)
@@ -649,12 +686,19 @@ export const api = {
       ).toString()
       return api.request<MobileHealingRecord[]>(`/api/v1/mobile/healing/history${qs ? `?${qs}` : ''}`)
     },
-    approveHealing(id: number) {
+    /** Not an AutoHeal approval — AutoHeal already applies any fix it finds
+     *  on its own. This only does anything for a REQUIRES_REVIEW record (no
+     *  candidate locator found at all): supply `locator` to retry the step
+     *  with it. Omitting `locator` only works if the record somehow already
+     *  has a candidate of its own. */
+    approveHealing(id: number, locator?: MobileLocator) {
       return api.request<{ status: string; rerun_execution_id?: number }>(
         `/api/v1/mobile/healing/${id}/approve`,
-        { method: 'POST' },
+        { method: 'POST', body: JSON.stringify(locator ? { locator } : {}) },
       )
     },
+    /** Dismiss a REQUIRES_REVIEW record without retrying — no locator was
+     *  supplied and the failure is left as-is. */
     rejectHealing(id: number) {
       return api.request<{ status: string }>(`/api/v1/mobile/healing/${id}/reject`, {
         method: 'POST',
@@ -664,6 +708,16 @@ export const api = {
       return api.request<{ status: string }>(`/api/v1/mobile/healing/${id}/rollback`, {
         method: 'POST',
       })
+    },
+
+    /** Not under /api/v1/mobile — this is a native backend-node route (see
+     *  routes/jira.ts) that reads the mobile engine's tables directly via the
+     *  shared Supabase database, the same way dashboard.ts does. */
+    createJiraBug(executionId: number) {
+      return api.request<{ success: boolean; ticketId: string; ticketUrl: string }>(
+        `/api/v1/jira/create-from-mobile-execution/${executionId}`,
+        { method: 'POST' },
+      )
     },
 
     /**

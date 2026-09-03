@@ -19,16 +19,17 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from mobile import device_manager
-from mobile.actions import ActionContext, ActionOutcome, execute_action
+from mobile.actions import ActionContext, ActionOutcome, consume_resolved_via_fallback, execute_action
 from mobile.appium_manager import (
     AppiumServerHandle,
-    create_uiautomator2_session,
+    create_session,
     quit_session,
     start_server,
     stop_server,
 )
 from mobile import evidence as evidence_module
 from mobile import failure as failure_module
+from mobile import visual as visual_module
 from mobile.healing import engine as healing_engine
 from mobile.healing import memory as locator_memory
 from mobile.live import FrameStreamer, event_bus
@@ -73,7 +74,7 @@ def _emit(execution_id: int, event: str, **fields) -> None:
 
 
 def _evidence_url(row) -> str:
-    return f"/{row.storage_path.replace(chr(92), '/')}"
+    return evidence_module.to_url(row.storage_path)
 
 
 def execute_test_steps(db, driver, execution, test, ctx, policy, application, app_version, app_package):
@@ -113,7 +114,9 @@ def execute_test_steps(db, driver, execution, test, ctx, policy, application, ap
         _emit(execution_id, "step_started", step_index=idx, action=step.action,
               locator=step.locator.dict() if step.locator else None)
 
+        _dismiss_system_dialog_if_present(execution_id, driver)
         outcome = _run_single_action(driver, step, ctx)
+        resolved_via_fallback = consume_resolved_via_fallback()
         healed = False
 
         if outcome.status == "PASSED" and original_locator_for_memory is not None and application is not None:
@@ -135,7 +138,16 @@ def execute_test_steps(db, driver, execution, test, ctx, policy, application, ap
 
         if (
             outcome.status == "FAILED"
-            and outcome.error_code == "ELEMENT_NOT_FOUND"
+            # TAP_NO_EFFECT means the resolved element wasn't wrong in the
+            # "not found" sense — it existed, but tapping it did nothing
+            # observable (e.g. a plain label sitting outside any clickable
+            # container). That's the same underlying problem AutoHeal already
+            # solves for ELEMENT_NOT_FOUND — this locator doesn't point at a
+            # usable target — so it gets the same chance to find a better
+            # candidate (a clickable sibling/ancestor) from the current
+            # screen, rather than the run just failing outright on a locator
+            # that resolved to the wrong thing instead of to nothing.
+            and outcome.error_code in ("ELEMENT_NOT_FOUND", "TAP_NO_EFFECT")
             and step.action in LOCATOR_DEPENDENT_ACTIONS
             and step.locator is not None
             and policy.healing.enabled
@@ -152,7 +164,17 @@ def execute_test_steps(db, driver, execution, test, ctx, policy, application, ap
             _emit(execution_id, "healing_result", step_index=idx, healing_id=healing_id,
                   healed=healed, status=outcome.status)
 
-        step_row.status = "HEALED" if healed else outcome.status
+        if healed:
+            step_row.status = "HEALED"
+        elif outcome.status == "PASSED" and resolved_via_fallback:
+            # Resolved via one of the step's own fallback_locators, not its
+            # primary one — worth surfacing in the report (the primary
+            # identifier has likely drifted and the source test should
+            # eventually be updated) without having spent a full AutoHeal
+            # cycle to recover from it.
+            step_row.status = "FALLBACK_RESOLVED"
+        else:
+            step_row.status = outcome.status
         step_row.actual = outcome.actual
         step_row.resolved_locator = outcome.resolved_locator
         step_row.completed_at = _now()
@@ -280,7 +302,8 @@ def run_execution(execution_id: int) -> None:
         app_activity = app_version.launchable_activity if app_version else None
 
         try:
-            driver = create_uiautomator2_session(
+            driver = create_session(
+                application.platform if application else None,
                 appium_handle.base_url, device.serial,
                 app_path=app_path, app_package=app_package, app_activity=app_activity,
                 no_reset=False,
@@ -306,7 +329,7 @@ def run_execution(execution_id: int) -> None:
         frame_streamer = FrameStreamer(execution_id, device.serial)
         frame_streamer.start()
 
-        ctx = ActionContext(expected_package=app_package)
+        ctx = ActionContext(expected_package=app_package, device_serial=device.serial)
         overall_status, artifacts, failures = execute_test_steps(
             db, driver, execution, test, ctx, policy, application, app_version, app_package,
         )
@@ -330,6 +353,15 @@ def run_execution(execution_id: int) -> None:
             elif pulled and tmp_path.exists():
                 tmp_path.unlink(missing_ok=True)
 
+        visual_baseline = None
+        if visual_module.is_enabled():
+            try:
+                png_bytes = driver.get_screenshot_as_png()
+                baseline_key = f"mobile::{test.name}::{app_package or ''}"
+                visual_baseline = visual_module.compare_screenshot_to_baseline(baseline_key, png_bytes)
+            except Exception:
+                visual_baseline = None  # optional check — never lets a completed test's finalization fail
+
         execution.completed_at = _now()
         execution.duration_ms = _ms_between(execution.started_at, execution.completed_at)
         execution.status = overall_status
@@ -339,6 +371,7 @@ def run_execution(execution_id: int) -> None:
             "artifacts": artifacts,
             "failures": failures,
             "adapter_version": execution.adapter_version,
+            **({"visual_baseline": visual_baseline} if visual_baseline is not None else {}),
         }
         db.commit()
         _emit(execution_id, "execution_completed", status=overall_status, duration_ms=execution.duration_ms)
@@ -450,6 +483,49 @@ def _is_stale_element_error(exc: Exception) -> bool:
         return False
 
 
+def _dismiss_system_dialog_if_present(execution_id: int, driver) -> bool:
+    """Proactive, best-effort check for a known OS-level interstitial (ANR,
+    etc.) run BEFORE dispatching the next step — not only reactively after a
+    step fails. On a resource-constrained (headless / software-rendered)
+    emulator, system_server itself can ANR independently of anything the step
+    under test touches. If that happens during a WAIT step, or between two
+    otherwise-successful actions, nothing would ever notice it without this
+    check: _try_recover_from_system_dialog below only runs when a step's
+    element lookup actually raises ElementNotFoundError. Left unaddressed,
+    the dialog can sit there for the rest of the run, blocking the live view
+    and every subsequent screenshot/recording frame.
+
+    Same safety rule as the reactive path: only ever taps the dialog's
+    documented safe recovery target (e.g. "Wait" on an ANR) — never "Close
+    app", which could discard the app's state and isn't this engine's call
+    to make (system_dialogs.py deliberately has no recovery mapping for it).
+    """
+    from mobile.system_dialogs import detect_system_dialog
+
+    try:
+        nodes = parse_hierarchy(capture_hierarchy_xml(driver))
+    except Exception:
+        return False
+
+    dialog = detect_system_dialog(nodes)
+    if dialog is None or not dialog["recovery_resource_id"]:
+        return False
+
+    try:
+        from mobile.locators import resolve_element, tap_element
+        recovery_locator = Locator(strategy="resource_id", value=dialog["recovery_resource_id"], hint="system dialog recovery")
+        tap_element(driver, resolve_element(driver, recovery_locator))
+        import time as _time
+        _time.sleep(1.0)  # let the device settle after dismissing the interstitial
+    except Exception as exc:
+        logger.warning("Proactive system dialog dismissal failed: %s", exc)
+        return False
+
+    logger.info("Proactively dismissed system dialog (%s) before next step.", dialog["error_code"])
+    _emit(execution_id, "system_dialog_dismissed", error_code=dialog["error_code"])
+    return True
+
+
 def _try_recover_from_system_dialog(driver, step: TestStep, ctx: ActionContext) -> Optional[ActionOutcome]:
     """Returns a final ActionOutcome if a system dialog explains the failure
     (either recovered-and-retried, or a clear ANR/system-failure result), or
@@ -557,7 +633,14 @@ def _attempt_heal(db, driver, execution, idx, test, step, app_package, applicati
     )
 
     if analysis.decision.decision != "AUTO_APPLY" or analysis.replacement_locator is None:
-        status = "BLOCKED" if analysis.decision.decision == "PENDING_APPROVAL" else "FAILED"
+        # healing/policy.py's decide() is autonomous by design (see its
+        # module docstring) — it never returns "PENDING_APPROVAL" waiting on
+        # a human. The only non-AUTO_APPLY outcome is "REQUIRES_REVIEW",
+        # when no usable candidate locator could be found at all; that's a
+        # genuine dead end (not an unreviewed fix), so it's marked BLOCKED
+        # rather than a plain FAILED, matching what the mobile API's
+        # REQUIRES_REVIEW status and its manual-locator retry path expect.
+        status = "BLOCKED" if analysis.decision.decision == "REQUIRES_REVIEW" else "FAILED"
         return (
             ActionOutcome(status=status, error=analysis.decision.reason, error_code="ELEMENT_NOT_FOUND"),
             False,

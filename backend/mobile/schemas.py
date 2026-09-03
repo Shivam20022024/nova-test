@@ -28,6 +28,11 @@ BASELINE_ACTIONS = [
     "ASSERT_DISABLED", "ASSERT_SELECTED", "ASSERT_CHECKED", "ASSERT_ATTRIBUTE",
     "ASSERT_ACTIVITY", "ASSERT_CRASH_FREE",
     "TAKE_SCREENSHOT", "CAPTURE_HIERARCHY",
+    # Device-condition actions (integration plan Phase 1) — grant/deny a runtime
+    # permission, send the app to background and back, post a local system
+    # notification, toggle/throttle the network, and mock GPS location.
+    "GRANT_PERMISSION", "DENY_PERMISSION", "SET_BACKGROUND",
+    "POST_LOCAL_NOTIFICATION", "SET_NETWORK_PROFILE", "SET_MOCK_LOCATION",
 ]
 
 CRITICAL_ACTION_HINTS = {"transfer", "submit", "delete", "pay", "confirm_payment", "approve"}
@@ -45,6 +50,13 @@ class Locator(BaseModel):
 class TestStep(BaseModel):
     action: str
     locator: Optional[Locator] = None
+    # Alternate identifiers for the SAME element as `locator`, recorded up
+    # front at authoring time (e.g. from the app's Screen Map) rather than
+    # discovered reactively after a failure. mobile/actions.py's _resolve()
+    # tries these, in order, before ever raising ElementNotFoundError — a
+    # renamed resource-id resolves silently on the next run instead of
+    # needing a full AutoHeal cycle every single time it happens.
+    fallback_locators: Optional[List[Locator]] = None
     value: Optional[str] = None
     timeout_ms: int = 10000
     risk: str = "LOW_RISK"  # LOW_RISK|MEDIUM_RISK|HIGH_RISK|CRITICAL
@@ -158,6 +170,7 @@ class TestCreateRequest(BaseModel):
     healing_policy: Optional[HealingPolicy] = None
     risk_level: str = "LOW_RISK"
     device_id: Optional[int] = None  # when set, wraps this test in a suite-of-one and auto-runs it immediately
+    release_id: Optional[str] = None  # optional Release tag for the auto-run, if device_id is also set
 
 
 class ExecutionCreateRequest(BaseModel):
@@ -169,6 +182,10 @@ class ExecutionCreateRequest(BaseModel):
     data_set: Optional[Dict[str, Any]] = None
     execution_policy: Optional[ExecutionPolicy] = None
     idempotency_key: Optional[str] = None
+    # Optional tag linking this run to a web-side Release (see
+    # ExecutionCreateRequest's release_id on the Node side for the same
+    # concept) — a plain id string, not validated against anything here.
+    release_id: Optional[str] = None
 
 
 class CompatibilityRunCreateRequest(BaseModel):
@@ -181,6 +198,25 @@ class CompatibilityRunCreateRequest(BaseModel):
     application_version_id: Optional[int] = None
     environment: str = "DEV"
     execution_policy: Optional[ExecutionPolicy] = None
+
+
+class HealingManualFixRequest(BaseModel):
+    """Body for POST /healing/{id}/approve. AutoHeal itself never needs this
+    — it only matters for a REQUIRES_REVIEW record, the genuine dead-end
+    where the engine found zero candidate locators to try on its own. In
+    that case there is nothing to "approve"; this is a person supplying a
+    replacement locator to retry with. Ignored for any record that already
+    has a candidate of its own."""
+    locator: Optional[Locator] = None
+
+
+class SuiteParallelRunRequest(BaseModel):
+    """Fan a suite's tests out across several devices at once instead of
+    running them one after another on a single shared device/session (that's
+    what POST /suites/{id}/run does) — the throughput use case (integration
+    plan Phase 2), distinct from CompatibilityRunCreateRequest's coverage
+    use case (same test, many devices)."""
+    device_ids: List[int] = Field(..., min_length=2)
 
 
 class StepResultOut(BaseModel):
@@ -205,6 +241,7 @@ class ExecutionOut(BaseModel):
     status: str
     test_id: int
     device_id: Optional[int]
+    environment: str = "DEV"
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     duration_ms: Optional[int]
@@ -226,6 +263,7 @@ class HealingRecordOut(BaseModel):
     risk_level: str
     status: str
     reason: Optional[str]
+    created_at: Optional[datetime.datetime] = None
 
     class Config:
         from_attributes = True

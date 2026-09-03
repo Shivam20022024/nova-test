@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
+import useSWR from 'swr'
 import { FileUp, Sparkles } from 'lucide-react'
 import { Button } from '../../../../components/ui/Button'
 import { Card } from '../../../../components/ui/Card'
+import { Select } from '../../../../components/ui/Select'
 import { Textarea } from '../../../../components/ui/Textarea'
 import { api } from '../../../../lib/api'
+import { isAllProjects, useData } from '../../../../contexts/DataContext'
 import { useToast } from '../../../../contexts/ToastContext'
-import type { MobileApplication, MobileBatchJob, MobileDevice } from '../../../../lib/types'
+import type { MobileApplication, MobileBatchJob, MobileDevice, Release } from '../../../../lib/types'
 
 type Props = {
   applications: MobileApplication[]
@@ -14,6 +17,10 @@ type Props = {
   applicationId: number | null
   deviceId: number | null
   onChanged: () => void
+  /** Called instead of onChanged whenever a run actually started, so the
+   *  caller can jump straight to watching it live — the same one-click
+   *  "author it and land on the live run" experience as One-Click Test. */
+  onRun: (suiteId: number) => void
 }
 
 /**
@@ -21,8 +28,9 @@ type Props = {
  * the same question — "what should this app be tested for?" — and differ only
  * in what you already have written down.
  */
-export function AuthorPanel({ applications, devices, aiEnabled, applicationId, deviceId, onChanged }: Props) {
+export function AuthorPanel({ applications, devices, aiEnabled, applicationId, deviceId, onChanged, onRun }: Props) {
   const { triggerToast } = useToast()
+  const { activeProject } = useData()
   const docRef = useRef<HTMLInputElement>(null)
   const trackerRef = useRef<HTMLInputElement>(null)
   const importRef = useRef<HTMLInputElement>(null)
@@ -30,6 +38,15 @@ export function AuthorPanel({ applications, devices, aiEnabled, applicationId, d
   const [objective, setObjective] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [job, setJob] = useState<MobileBatchJob | null>(null)
+  // The plan-review moment: what a just-generated test is actually going to
+  // do, in plain English, before the reviewer jumps to watching it run.
+  const [lastPlan, setLastPlan] = useState<{ lines: string[]; warnings: string[]; suiteId: number | null } | null>(null)
+  // Optional: tag this run with a release checkpoint, same as One-Click Test.
+  const [releaseId, setReleaseId] = useState('')
+  const releases = useSWR<Release[]>(
+    activeProject && !isAllProjects(activeProject) ? ['releases', activeProject.id] : null,
+    () => api.listReleases(activeProject!.id),
+  )
 
   const app = applications.find((a) => a.id === applicationId)
   const device = devices.find((d) => d.id === deviceId)
@@ -46,13 +63,14 @@ export function AuthorPanel({ applications, devices, aiEnabled, applicationId, d
           setJob(fresh)
           if (fresh.status === 'COMPLETED') {
             triggerToast(`Generated ${fresh.created.length} tests from ${fresh.filename}.`)
-            onChanged()
+            if (fresh.suite_id != null) onRun(fresh.suite_id)
+            else onChanged()
           }
         })
         .catch(() => {})
     }, 3000)
     return () => clearInterval(timer)
-  }, [job, onChanged, triggerToast])
+  }, [job, onChanged, onRun, triggerToast])
 
   async function generate(file?: File) {
     if (!objective.trim() && !file) {
@@ -66,6 +84,7 @@ export function AuthorPanel({ applications, devices, aiEnabled, applicationId, d
         file,
         applicationId: applicationId ?? undefined,
         deviceId: deviceId ?? undefined,
+        releaseId: releaseId || undefined,
       })
       if (!result.automatable) {
         triggerToast(`Saved, but flagged as not automatable: ${result.not_automatable_reason}`, true)
@@ -77,7 +96,12 @@ export function AuthorPanel({ applications, devices, aiEnabled, applicationId, d
         )
       }
       setObjective('')
-      onChanged()
+      // Show the plan before jumping to the live run — the run has already
+      // started server-side (auto-run is unchanged), this only delays when
+      // the reviewer's own view navigates away, so what's about to execute
+      // is legible instead of a black box.
+      setLastPlan({ lines: result.plan_summary, warnings: result.warnings, suiteId: result.suite_id })
+      if (result.suite_id == null) onChanged()
     } catch (error) {
       triggerToast(`Generation failed: ${(error as Error).message}`, true)
     } finally {
@@ -96,7 +120,8 @@ export function AuthorPanel({ applications, devices, aiEnabled, applicationId, d
       } else {
         triggerToast(`Imported ${result.created.length} tests.`)
       }
-      onChanged()
+      if (result.suite_id != null) onRun(result.suite_id)
+      else onChanged()
     } catch (error) {
       triggerToast(`Import failed: ${(error as Error).message}`, true)
     } finally {
@@ -125,6 +150,34 @@ export function AuthorPanel({ applications, devices, aiEnabled, applicationId, d
         </p>
       )}
 
+      {lastPlan && (
+        <Card className="p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="font-sans text-base font-semibold text-ink">Generated plan</h2>
+              <p className="mt-1 text-sm text-ink-soft">
+                {lastPlan.suiteId != null
+                  ? 'Already running on the device — here is exactly what it will do.'
+                  : 'Saved as a draft. Pick a device to run it.'}
+              </p>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              {lastPlan.suiteId != null && (
+                <Button onClick={() => onRun(lastPlan.suiteId!)}>View live run</Button>
+              )}
+              <Button variant="outline" onClick={() => setLastPlan(null)}>Dismiss</Button>
+            </div>
+          </div>
+          <ol className="mt-4 space-y-1 text-sm text-ink-soft">
+            {lastPlan.lines.map((line, i) => (
+              <li key={i} className={line.includes('review before running') ? 'text-amber-700' : undefined}>
+                {line}
+              </li>
+            ))}
+          </ol>
+        </Card>
+      )}
+
       <Card className="p-6">
         <h2 className="font-sans text-base font-semibold text-ink">Describe a scenario</h2>
         <p className="mt-1 text-sm text-ink-soft">
@@ -143,6 +196,22 @@ export function AuthorPanel({ applications, devices, aiEnabled, applicationId, d
             disabled={!aiEnabled}
             helperText={aiEnabled ? undefined : 'AI generation is off — set OPENAI_API_KEY on the backend to enable it.'}
           />
+        </div>
+
+        <div className="mt-4 max-w-xs">
+          <Select
+            label="Release (optional)"
+            value={releaseId}
+            onChange={(event) => setReleaseId(event.target.value)}
+            helperText="Tag this run for later comparison."
+          >
+            <option value="">No release</option>
+            {(releases.data ?? []).map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </Select>
         </div>
 
         <input ref={docRef} type="file" accept=".pdf,.docx,.xlsx,.txt" className="hidden"

@@ -20,10 +20,13 @@ from sqlalchemy.orm import Session
 from mobile.healing import memory as locator_memory
 from mobile.healing.candidate_generator import generate_candidates, node_to_best_locator
 from mobile.healing.policy import PolicyDecision, decide
-from mobile.healing.validator import validate_candidate_pre_execution, validate_post_execution
+from mobile.healing.validator import validate_post_execution
 from mobile.locators import ElementNode, capture_hierarchy_xml, element_attributes_snapshot, parse_hierarchy
 from mobile.models import MobileHealingRecord
 from mobile.schemas import HealingPolicy, Locator
+from utils.logger import get_logger
+
+logger = get_logger("mobile.healing.engine")
 
 REQUIRES_INTERACTIVE_ACTIONS = {
     "TAP", "DOUBLE_TAP", "LONG_PRESS", "ENTER_TEXT", "REPLACE_TEXT",
@@ -58,39 +61,34 @@ def analyze(
     xml = capture_hierarchy_xml(driver)
     nodes = parse_hierarchy(xml)
 
+    # A cached "this locator healed to X before" is strong evidence, not proof
+    # — the scorer already has dedicated weights for it (historical_locator_
+    # reuse / historically_successful_before in scorer.py), sized so a perfect
+    # historical match adds up to +55, not an automatic top score. This used
+    # to short-circuit straight to a hardcoded 99.0 the moment ANY memory row
+    # existed, skipping the scorer (and therefore skipping the confidence
+    # floor in policy.py) entirely: one wrong heal — a low-confidence guess
+    # that happened to pass its shallow "app didn't crash" pre-execution
+    # check — got memorized as a "successful" locator and then silently
+    # reapplied at near-100% confidence forever after, on every future run,
+    # for any app, regardless of whether the cached element still made any
+    # sense. Routing it through generate_candidates() like every other
+    # candidate means history is one more signal the real element has to earn
+    # its score with, not a bypass around scoring altogether.
     used_memory_shortcut = False
-    candidates: List[Dict[str, Any]] = []
     memory_row = None
-
     if application_id and package_name:
         memory_row = locator_memory.find_by_original_locator(db, application_id, package_name, original_locator)
 
-    if memory_row is not None:
-        try:
-            historical_candidate = Locator(**memory_row.successful_locator)
-        except Exception:
-            historical_candidate = None
-        if historical_candidate is not None:
-            check = validate_candidate_pre_execution(driver, historical_candidate, requires_interactive)
-            if check.valid:
-                candidates = [{
-                    "locator": historical_candidate.dict(),
-                    "score": 99.0,
-                    "signals": {"historical_locator_reuse": True, "healing_count": memory_row.healing_count},
-                    "element_attributes": memory_row.element_attributes,
-                }]
-                used_memory_shortcut = True
-
-    if not candidates:
-        historical_locator_dict = memory_row.successful_locator if memory_row else None
-        candidates = generate_candidates(
-            nodes=nodes,
-            original_locator=original_locator,
-            hint=original_locator.hint,
-            requires_interactive=requires_interactive,
-            historical_locator=historical_locator_dict,
-            historically_successful_before=bool(memory_row and memory_row.healing_count > 0),
-        )
+    historical_locator_dict = memory_row.successful_locator if memory_row else None
+    candidates = generate_candidates(
+        nodes=nodes,
+        original_locator=original_locator,
+        hint=original_locator.hint,
+        requires_interactive=requires_interactive,
+        historical_locator=historical_locator_dict,
+        historically_successful_before=bool(memory_row and memory_row.healing_count > 0),
+    )
 
     # Last resort, section 57: "use OpenAI only if deterministic evidence is
     # insufficient" — never the first-line classifier. The AI's opinion is
@@ -100,7 +98,7 @@ def analyze(
     # bypasses policy on its own.
     top_score = candidates[0]["score"] if candidates else 0.0
     if top_score < healing_policy.auto_apply_threshold:
-        ai_candidate = _maybe_ai_candidate(nodes, original_locator, requires_interactive)
+        ai_candidate = _maybe_ai_candidate(driver, nodes, original_locator, requires_interactive)
         if ai_candidate is not None:
             candidates = sorted(candidates + [ai_candidate], key=lambda c: c["score"], reverse=True)
 
@@ -141,6 +139,7 @@ def analyze(
 
 
 def _maybe_ai_candidate(
+    driver,
     nodes: List[ElementNode],
     original_locator: Locator,
     requires_interactive: bool,
@@ -149,7 +148,15 @@ def _maybe_ai_candidate(
     wasn't confident. Returns a candidate dict in the exact same shape
     generate_candidates() produces, or None (AI disabled, call failed, or
     the model itself declined to guess) — in every case the caller falls
-    back to deterministic-only behavior."""
+    back to deterministic-only behavior.
+
+    Tries to include an annotated screenshot (Set-of-Marks — see
+    mobile/som_annotate.py) alongside the usual text attributes: several
+    near-identical candidates (a repeated card grid, a cluster of small
+    icons) can look the same in DOM attributes alone but be trivially
+    distinguishable by what they actually look like on screen. Screenshot
+    capture/annotation is best-effort — any failure just falls back to the
+    existing text-only suggestion, exactly as before this capability existed."""
     try:
         from mobile.ai_gateway import is_enabled, suggest_locator
     except ImportError:
@@ -163,7 +170,20 @@ def _maybe_ai_candidate(
     pool = pool[:60]
     candidate_payload = [element_attributes_snapshot(n) for n in pool]
 
-    suggestion = suggest_locator(original_locator.dict(), candidate_payload)
+    # A screenshot boxed with 60 numbers would be unreadable noise rather
+    # than useful evidence — only the vision call's own pool is capped
+    # tighter; the text-only payload above still covers the full 60.
+    screenshot_png = None
+    try:
+        vision_pool = pool[:20]
+        raw_png = driver.get_screenshot_as_png()
+        from mobile.som_annotate import annotate_candidates
+        screenshot_png = annotate_candidates(raw_png, vision_pool)
+    except Exception as exc:
+        logger.debug("Screenshot annotation unavailable for AI locator suggestion (continuing text-only): %s", exc)
+        screenshot_png = None
+
+    suggestion = suggest_locator(original_locator.dict(), candidate_payload, screenshot_png=screenshot_png)
     if suggestion is None:
         return None
 
@@ -171,7 +191,11 @@ def _maybe_ai_candidate(
     return {
         "locator": node_to_best_locator(node).dict(),
         "score": suggestion["confidence"],
-        "signals": {"ai_suggested": True, "rationale": suggestion.get("rationale", "")},
+        "signals": {
+            "ai_suggested": True,
+            "rationale": suggestion.get("rationale", ""),
+            **({"ai_vision_grounded": True} if screenshot_png else {}),
+        },
         "element_attributes": element_attributes_snapshot(node),
     }
 

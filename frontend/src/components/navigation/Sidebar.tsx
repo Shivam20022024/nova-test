@@ -4,13 +4,18 @@ import {
   Code2,
   FlaskConical,
   FolderKanban,
+  GitCompare,
+  Layers,
   LayoutDashboard,
+  Package,
   PanelLeftClose,
   PanelLeftOpen,
   PlayCircle,
   Plug,
   Settings as SettingsIcon,
+  ShieldCheck,
   Smartphone,
+  Sparkles,
   Wand2,
   X,
   Zap,
@@ -25,15 +30,21 @@ import type { NavIconKey } from '../../config/navigation'
 
 const icons: Record<NavIconKey, LucideIcon> = {
   'command-center': LayoutDashboard,
-  'one-click-test': Zap,
-  'code-generator': Code2,
   projects: FolderKanban,
   application: AppWindow,
+  'one-click-test': Zap,
+  'code-generator': Code2,
   tests: FlaskConical,
-  mobile: Smartphone,
   executions: PlayCircle,
+  'mobile-apps': Package,
+  'mobile-devices': Smartphone,
+  'mobile-author': Sparkles,
+  'mobile-executions': PlayCircle,
+  compatibility: Layers,
   healing: Wand2,
   reports: BarChart3,
+  'release-readiness': ShieldCheck,
+  'release-comparison': GitCompare,
   integrations: Plug,
   settings: SettingsIcon,
 }
@@ -106,7 +117,7 @@ export function Sidebar() {
                     <span
                       className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors ${
                         isActive
-                          ? 'bg-accent-soft font-medium text-accent-deep'
+                          ? 'bg-selected font-medium text-accent-deep'
                           : 'text-ink-soft hover:bg-paper hover:text-ink'
                       } ${collapsed ? 'justify-center' : ''}`}
                       title={collapsed ? item.label : undefined}

@@ -112,7 +112,7 @@ function CountrySelect({
                   setQuery('')
                 }}
                 className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm hover:bg-paper ${
-                  option.value === value ? 'bg-accent-soft text-accent-deep' : 'text-ink'
+                  option.value === value ? 'bg-selected text-accent-deep' : 'text-ink'
                 }`}
               >
                 <Icon country={option.value} />

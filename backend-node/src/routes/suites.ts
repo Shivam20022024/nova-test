@@ -34,9 +34,10 @@ router.get('/:id/executions', async (req: AuthRequest, res: Response) => {
 // POST /api/v1/suites/:id/run
 router.post('/:id/run', async (req: AuthRequest, res: Response) => {
   try {
+    const { testType } = req.body || {};
     const { data: newExecution, error } = await supabase
       .from('ExecutionLog')
-      .insert({ suiteId: req.params.id as string, status: 'PENDING' })
+      .insert({ suiteId: req.params.id as string, status: 'PENDING', ...(testType ? { testType } : {}) })
       .select()
       .single();
     if (error) throw error;

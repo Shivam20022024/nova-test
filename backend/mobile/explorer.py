@@ -44,21 +44,34 @@ logger = get_logger("mobile.explorer")
 _SKIP_TAP_LABELS = {"back", "navigate up", "close", "cancel", "menu", "open navigation drawer", "more options"}
 
 
-def _best_locator(node: ElementNode) -> Dict[str, Optional[str]]:
+def _all_locators(node: ElementNode) -> List[Dict[str, Optional[str]]]:
+    """Every real identifier this element carries, most-stable first (the
+    same priority order _best_locator used to pick a single winner from).
+    This is the material fallback_locators in the generation prompt draws
+    on — a genuinely different, real identifier for the SAME element the
+    primary locator already points at, not an invented one. Always returns
+    at least one entry."""
     a = node.attrs
     hint = (a.get("content-desc") or a.get("text") or "").strip() or None
-    rid = a.get("resource-id")
-    if rid:
-        return {"strategy": "resource_id", "value": rid, "hint": hint}
+    out: List[Dict[str, Optional[str]]] = []
+    if a.get("resource-id"):
+        out.append({"strategy": "resource_id", "value": a["resource-id"], "hint": hint})
     if a.get("content-desc"):
-        return {"strategy": "accessibility_id", "value": a["content-desc"], "hint": hint}
+        out.append({"strategy": "accessibility_id", "value": a["content-desc"], "hint": hint})
     if a.get("text"):
-        return {"strategy": "text", "value": a["text"].strip(), "hint": hint}
-    return {"strategy": "xpath", "value": node.path or f"//{a.get('class','*')}", "hint": hint}
+        out.append({"strategy": "text", "value": a["text"].strip(), "hint": hint})
+    if not out:
+        out.append({"strategy": "xpath", "value": node.path or f"//{a.get('class','*')}", "hint": hint})
+    return out
+
+
+def _best_locator(node: ElementNode) -> Dict[str, Optional[str]]:
+    return _all_locators(node)[0]
 
 
 def _summarize_element(node: ElementNode) -> Dict[str, Any]:
-    loc = _best_locator(node)
+    locators = _all_locators(node)
+    loc = locators[0]
     return {
         "strategy": loc["strategy"],
         "value": loc["value"],
@@ -67,6 +80,11 @@ def _summarize_element(node: ElementNode) -> Dict[str, Any]:
         "clickable": node.attrs.get("clickable") == "true",
         "editable": is_editable(node),
         "class": node.attrs.get("class", "").split(".")[-1],
+        # Any OTHER real identifiers this same element carries, beyond the
+        # primary one above — exposed so the generator can populate a step's
+        # fallback_locators from real, redundant identifiers instead of
+        # never being able to name a second one at all.
+        "alt_locators": [{"strategy": l["strategy"], "value": l["value"]} for l in locators[1:]],
     }
 
 
@@ -211,12 +229,20 @@ def explore_app(
     return result
 
 
-def run_exploration(application_version_id: int, device_id: int) -> Dict[str, Any]:
+def run_exploration(
+    application_version_id: int, device_id: int,
+    max_screens: int = 14, time_budget_s: int = 210,
+) -> Dict[str, Any]:
     """Full lifecycle: reserve device → Appium server + session → crawl →
     persist the ScreenMap onto the MobileApplicationVersion → tear everything
     down. Mirrors mobile/engine.run_execution's setup so exploration reuses
     the exact same device/session machinery. Safe to call in a background
-    thread. Returns the screen map."""
+    thread. Returns the screen map.
+
+    `max_screens`/`time_budget_s` default to the full crawl's own defaults —
+    only a caller that explicitly wants a smaller, bounded pass (e.g. a
+    synchronous first-generation grounding pass that can't afford to block a
+    request for minutes) overrides them; every existing caller is unaffected."""
     from mobile import device_manager
     from mobile.appium_manager import create_uiautomator2_session, quit_session, start_server, stop_server
     from mobile.database import SessionLocal
@@ -247,7 +273,7 @@ def run_exploration(application_version_id: int, device_id: int) -> Dict[str, An
             app_activity=version.launchable_activity, no_reset=False,
         )
 
-        screen_map = explore_app(driver, application.package_name)
+        screen_map = explore_app(driver, application.package_name, max_screens=max_screens, time_budget_s=time_budget_s)
 
         version.screen_map = screen_map
         version.screen_map_captured_at = datetime.datetime.utcnow()
@@ -288,5 +314,11 @@ def compact_for_prompt(screen_map: Dict[str, Any], max_elements_per_screen: int 
             lines.append("  visible text: " + " | ".join(s["static_text"][:15]))
         for el in s.get("elements", [])[:max_elements_per_screen]:
             tag = "input" if el["editable"] else el["role"]
-            lines.append(f'  - [{tag}] {el["strategy"]}={el["value"]!r}' + (f'  ({el["hint"]})' if el.get("hint") and el["hint"] != el["value"] else ""))
+            alts = el.get("alt_locators") or []
+            alt_text = "  [also: " + ", ".join(f'{a["strategy"]}={a["value"]!r}' for a in alts) + "]" if alts else ""
+            lines.append(
+                f'  - [{tag}] {el["strategy"]}={el["value"]!r}'
+                + (f'  ({el["hint"]})' if el.get("hint") and el["hint"] != el["value"] else "")
+                + alt_text
+            )
     return "\n".join(lines)

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { ChevronDown, ChevronRight, Layers, Play } from 'lucide-react'
 import { Button } from '../../../../components/ui/Button'
 import { Card } from '../../../../components/ui/Card'
@@ -13,11 +14,11 @@ import { formatDuration, formatWhen, statusLabel, toStatus } from '../mobileStat
 type Props = {
   suites: MobileSuite[]
   loading: boolean
-  onChanged: () => void
   onWatch: (executionId: number) => void
 }
 
-export function SuitesPanel({ suites, loading, onChanged, onWatch }: Props) {
+export function SuitesPanel({ suites, loading, onWatch }: Props) {
+  const navigate = useNavigate()
   const { triggerToast } = useToast()
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [running, setRunning] = useState<number | null>(null)
@@ -36,7 +37,7 @@ export function SuitesPanel({ suites, loading, onChanged, onWatch }: Props) {
     try {
       await api.mobile.runSuite(suite.id)
       triggerToast(`Re-running ${suite.name}.`)
-      onChanged()
+      navigate(`/app/mobile/executions/${suite.id}`)
     } catch (error) {
       triggerToast(`Could not start the suite: ${(error as Error).message}`, true)
     } finally {
@@ -100,13 +101,14 @@ export function SuitesPanel({ suites, loading, onChanged, onWatch }: Props) {
                   stays readable at a glance in a list of many suites. */}
               <div className="flex items-center gap-3">
                 <div className="flex h-1.5 w-28 overflow-hidden rounded-full bg-line" role="img"
-                  aria-label={`${suite.passed_count} passed, ${suite.failed_count} failed, ${suite.skipped_count} skipped`}>
+                  aria-label={`${suite.passed_count} passed, ${suite.failed_count} failed, ${suite.blocked_count} blocked, ${suite.skipped_count} skipped`}>
                   <span style={{ width: `${(suite.passed_count / total) * 100}%`, backgroundColor: 'var(--color-pass)' }} />
                   <span style={{ width: `${(suite.failed_count / total) * 100}%`, backgroundColor: 'var(--color-fail)' }} />
+                  <span style={{ width: `${(suite.blocked_count / total) * 100}%`, backgroundColor: 'var(--color-blocked)' }} />
                   <span style={{ width: `${(suite.skipped_count / total) * 100}%`, backgroundColor: 'var(--color-blocked)' }} />
                 </div>
                 <span className="font-mono text-xs text-ink-soft">
-                  {suite.passed_count}/{suite.test_count}
+                  {suite.passed_count}/{suite.test_count} tests
                 </span>
               </div>
 

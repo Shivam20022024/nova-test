@@ -15,7 +15,7 @@ export function Chip({ active = false, onClick, children, className = '' }: Chip
       aria-pressed={active}
       className={`rounded-full border px-3.5 py-1.5 font-mono text-xs whitespace-nowrap transition-colors ${
         active
-          ? 'border-accent bg-accent-soft text-accent-deep'
+          ? 'border-accent bg-selected text-accent-deep'
           : 'border-line text-ink-soft hover:border-ink hover:text-ink'
       } ${className}`.trim()}
     >

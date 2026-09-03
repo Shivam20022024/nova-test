@@ -28,7 +28,7 @@ from mobile import failure as failure_module
 from mobile.actions import ActionContext
 from mobile.appium_manager import (
     AppiumServerHandle,
-    create_uiautomator2_session,
+    create_session,
     quit_session,
     start_server,
     stop_server,
@@ -53,9 +53,13 @@ logger = get_logger("mobile.suite_engine")
 FFMPEG_BIN = shutil.which("ffmpeg")
 
 
-def run_suite(suite_id: int) -> None:
+def run_suite(suite_id: int, release_id: Optional[str] = None) -> None:
     """Entry point invoked from the API layer via a background thread —
-    mirrors run_execution()'s BackgroundTasks pattern but for a whole suite."""
+    mirrors run_execution()'s BackgroundTasks pattern but for a whole suite.
+    `release_id` is an optional tag (a web-side Release's id) stamped onto
+    every execution this suite creates — passed straight through rather
+    than stored on the suite itself, so tagging a run with a release needed
+    no new column beyond the one already added to MobileExecution."""
     db = SessionLocal()
     driver = None
     appium_handle: Optional[AppiumServerHandle] = None
@@ -108,7 +112,7 @@ def run_suite(suite_id: int) -> None:
             MobileExecution(
                 test_id=test.id, application_version_id=app_version.id if app_version else None,
                 device_id=device.id if device else None, suite_id=suite.id,
-                environment="DEV", status="QUEUED",
+                environment="DEV", status="QUEUED", release_uuid=release_id,
                 environment_snapshot={"execution_policy": policy.dict()},
             )
             for test in tests
@@ -157,7 +161,8 @@ def run_suite(suite_id: int) -> None:
         app_activity = app_version.launchable_activity if app_version else None
 
         try:
-            driver = create_uiautomator2_session(
+            driver = create_session(
+                application.platform if application else None,
                 appium_handle.base_url, device.serial,
                 app_path=app_path, app_package=app_package, app_activity=app_activity,
                 no_reset=False,
@@ -169,7 +174,7 @@ def run_suite(suite_id: int) -> None:
             _finish_suite(db, suite)
             return
 
-        ctx = ActionContext(expected_package=app_package)
+        ctx = ActionContext(expected_package=app_package, device_serial=device.serial)
         per_test_video_paths: List[Path] = []
         per_test_video_storage_paths: List[str] = []
 
@@ -240,10 +245,18 @@ def run_suite(suite_id: int) -> None:
                     video_row = evidence_module.save_video(db, execution.id, tmp_path)
                     if video_row is not None:
                         artifacts.append(video_row.id)
-                        per_test_video_paths.append(evidence_module.STORAGE_ROOT.parent.parent / video_row.storage_path)
+                        # local_path is a transient attribute set by save_video() and is
+                        # guaranteed to point at the file on THIS disk regardless of
+                        # whether storage_path ended up as a Supabase URL — reversing
+                        # storage_path back into a Path would silently produce a
+                        # nonexistent path (and thus a dropped whole-suite video) once
+                        # cloud upload is enabled.
+                        local_video_path = getattr(video_row, "local_path", None)
+                        if local_video_path is not None:
+                            per_test_video_paths.append(local_video_path)
                         per_test_video_storage_paths.append(video_row.storage_path)
                         execution.video_path = video_row.storage_path
-                        _emit(execution.id, "video_ready", url=f"/{video_row.storage_path.replace(chr(92), '/')}")
+                        _emit(execution.id, "video_ready", url=evidence_module.to_url(video_row.storage_path))
                 elif tmp_path.exists():
                     tmp_path.unlink(missing_ok=True)
 

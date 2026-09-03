@@ -1,9 +1,37 @@
 import { Fragment, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ChevronDown, ChevronRight, Folder, FolderOpen } from 'lucide-react'
+import { ChevronDown, ChevronRight, Folder, FolderOpen, Globe, Smartphone } from 'lucide-react'
 import { StatusBadge } from '../../../../components/ui/StatusBadge'
 import type { Status } from '../../../../components/ui/StatusBadge'
-import type { RecentExecutionItem } from '../../../../lib/types'
+import type { RecentExecutionItem, RunSource } from '../../../../lib/types'
+
+/** Rows fetched before this field existed have no `source` — they're all web
+ *  (mobile support landed after them), so default rather than mis-badge. */
+function toRunSource(source: RunSource | undefined): RunSource {
+  return source ?? 'web'
+}
+
+function SourceBadge({ source }: { source: RunSource }) {
+  const isMobile = source === 'mobile'
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-xs"
+      style={{
+        color: isMobile ? 'var(--color-healing)' : 'var(--color-running)',
+        backgroundColor: isMobile
+          ? 'color-mix(in srgb, var(--color-healing) 12%, transparent)'
+          : 'color-mix(in srgb, var(--color-running) 12%, transparent)',
+      }}
+    >
+      {isMobile ? <Smartphone size={11} aria-hidden="true" /> : <Globe size={11} aria-hidden="true" />}
+      {isMobile ? 'Mobile' : 'Web'}
+    </span>
+  )
+}
+
+function reportPath(source: RunSource, runId: string): string {
+  return source === 'mobile' ? `/app/mobile/executions/${runId}/report` : `/app/execution/${runId}/report`
+}
 
 /**
  * Statuses arrive lower-cased from `/dashboard/recent-executions`, unlike every
@@ -48,7 +76,7 @@ export function RecentExecutionsSection({ items }: { items: RecentExecutionItem[
         <table className="w-full min-w-max border-collapse text-sm">
           <thead>
             <tr className="border-b border-line">
-              {['Test', 'Browser', 'Project', 'Status', 'Duration', 'Started'].map((header) => (
+              {['Source', 'Test', 'Browser', 'Project', 'Status', 'Duration', 'Started'].map((header) => (
                 <th
                   key={header}
                   className={`px-3 py-2 text-left font-mono text-xs text-muted uppercase ${
@@ -66,12 +94,16 @@ export function RecentExecutionsSection({ items }: { items: RecentExecutionItem[
               // folder row instead of listing every scenario separately.
               if (item.type === 'folder') {
                 const isOpen = expanded.has(item.batchId)
+                const folderSource = toRunSource(item.source)
                 return (
                   <Fragment key={item.batchId}>
                     <tr
                       onClick={() => toggle(item.batchId)}
                       className="cursor-pointer border-b border-line bg-paper hover:bg-sand"
                     >
+                      <td className="px-3 py-2.5">
+                        <SourceBadge source={folderSource} />
+                      </td>
                       <td className="px-3 py-2.5">
                         <span className="flex items-center gap-2">
                           {isOpen ? (
@@ -108,9 +140,10 @@ export function RecentExecutionsSection({ items }: { items: RecentExecutionItem[
                       item.executions.map((run) => (
                         <tr
                           key={run.id}
-                          onClick={() => navigate(`/app/execution/${run.run_id}/report`)}
+                          onClick={() => navigate(reportPath(folderSource, run.run_id))}
                           className="cursor-pointer border-b border-line hover:bg-paper"
                         >
+                          <td className="px-3 py-2" />
                           <td className="py-2 pr-3 pl-12">
                             <span className="block text-ink">{run.testName}</span>
                             <span className="block font-mono text-xs text-muted">{run.run_id}</span>
@@ -130,12 +163,16 @@ export function RecentExecutionsSection({ items }: { items: RecentExecutionItem[
                 )
               }
 
+              const rowSource = toRunSource(item.source)
               return (
                 <tr
                   key={item.id}
-                  onClick={() => navigate(`/app/execution/${item.run_id}/report`)}
+                  onClick={() => navigate(reportPath(rowSource, item.run_id))}
                   className="cursor-pointer border-b border-line last:border-b-0 hover:bg-paper"
                 >
+                  <td className="px-3 py-2.5">
+                    <SourceBadge source={rowSource} />
+                  </td>
                   <td className="px-3 py-2.5">
                     <span className="block font-medium text-ink">{item.testName}</span>
                     <span className="block font-mono text-xs text-muted">{item.run_id}</span>

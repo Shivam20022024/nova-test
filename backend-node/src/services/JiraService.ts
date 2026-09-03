@@ -223,6 +223,106 @@ export class JiraService {
     }
   }
 
+  /**
+   * Same purpose as attachFile, for evidence that already lives as a URL
+   * (mobile evidence is uploaded straight to Supabase Storage — see
+   * backend/mobile/artifact_store.py — so there is no local file to stream).
+   * Takes the bytes directly rather than a path so the caller controls how
+   * they were fetched.
+   */
+  async attachBuffer(issueKey: string, data: Buffer, filename: string): Promise<boolean> {
+    try {
+      const formData = new FormData();
+      formData.append('file', data, { filename });
+
+      const headers = {
+        'Authorization': this.getAuthHeader().Authorization,
+        'X-Atlassian-Token': 'no-check',
+        ...formData.getHeaders()
+      };
+
+      const response = await axios.post(`${this.baseUrl}/rest/api/3/issue/${issueKey}/attachments`, formData, {
+        headers
+      });
+
+      return response.status === 200;
+    } catch (error: any) {
+      console.error('[JiraService] attachBuffer failed:', error.response?.data || error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Mobile equivalent of generateBugReportAdf. Deliberately a separate
+   * function rather than a branch inside the web one: the two execution
+   * shapes share almost no field names (device/Appium/locator vs.
+   * browser/DOM/selector), so branching field-by-field would be harder to
+   * read than two short, independent builders.
+   */
+  static generateMobileBugReportAdf(execution: any, test: any, device: any, reportUrl: string): any[] {
+    const stepResults: any[] = Array.isArray(execution.step_results) ? execution.step_results : [];
+    const failedStep = stepResults.find((s: any) => s.status === 'FAILED' || s.status === 'BLOCKED');
+
+    const testName = test?.name || `Mobile test ${execution.test_id}`;
+    const deviceLabel = device ? `${device.model || device.serial}${device.android_version ? ` (Android ${device.android_version})` : ''}` : 'Not available in execution data';
+    const action = failedStep?.action || 'Not available in execution data';
+    const locatorValue = failedStep?.resolved_locator?.value || failedStep?.locator?.value || 'Not available in execution data';
+    const errorMsg = failedStep?.actual || execution.result_json?.error || 'Not available in execution data';
+
+    const failureSummary = `Mobile test '${testName}' failed on ${deviceLabel}. The test failed while executing '${action}' on locator '${locatorValue}'. Error: ${errorMsg}`;
+    const expectedBehavior = action !== 'Not available in execution data'
+      ? `The automated test was expected to successfully complete the action: '${action}' on '${locatorValue}'.`
+      : `The automated test was expected to complete all steps without failure.`;
+    const actualBehavior = `During execution, step ${failedStep?.step_index ?? '?'} failed and the run could not proceed. Actual error observed: ${errorMsg}`;
+
+    const adf: any[] = [];
+    const addHeading = (text: string, level: number = 2) => {
+      adf.push({ type: "heading", attrs: { level }, content: [{ type: "text", text }] });
+    };
+    const addBullet = (label: string, value: string, linkUrl?: string) => {
+      const content: any[] = [{ type: "text", text: `${label}: `, marks: [{ type: "strong" }] }];
+      if (linkUrl && value !== 'Not available in execution data') {
+        content.push({ type: "text", text: value, marks: [{ type: "link", attrs: { href: linkUrl } }] });
+      } else {
+        content.push({ type: "text", text: value || 'Not available in execution data' });
+      }
+      return { type: "listItem", content: [{ type: "paragraph", content }] };
+    };
+
+    addHeading("Mobile Test Execution Failure Report", 2);
+
+    addHeading("Failure Summary", 3);
+    adf.push({ type: "paragraph", content: [{ type: "text", text: failureSummary }] });
+
+    addHeading("Execution Details", 3);
+    adf.push({
+      type: "bulletList",
+      content: [
+        addBullet("Execution ID", String(execution.id ?? 'Not available in execution data')),
+        addBullet("Test", testName),
+        addBullet("Device", deviceLabel),
+        addBullet("Execution status", execution.status || 'Not available in execution data'),
+        addBullet("Timestamp", execution.started_at ? new Date(execution.started_at).toISOString() : 'Not available in execution data'),
+      ]
+    });
+
+    addHeading("Expected Behavior", 3);
+    adf.push({ type: "paragraph", content: [{ type: "text", text: expectedBehavior }] });
+
+    addHeading("Actual Behavior", 3);
+    adf.push({ type: "paragraph", content: [{ type: "text", text: actualBehavior }] });
+
+    addHeading("Full Execution Report", 3);
+    adf.push({
+      type: "bulletList",
+      content: [
+        addBullet("NovaTest Dashboard", "View Complete Execution Report", reportUrl)
+      ]
+    });
+
+    return adf;
+  }
+
   static generateBugReportAdf(execution: any, reportUrl: string): any[] {
     let failedStep: any = null;
     try {

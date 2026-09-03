@@ -41,6 +41,25 @@ def _persisted_path(path: Path, key: str, data: bytes, content_type: str) -> str
     return uploaded or str(path.relative_to(STORAGE_ROOT.parent.parent))
 
 
+def to_url(storage_path: Optional[str]) -> Optional[str]:
+    """Render a persisted storage_path (see _persisted_path) as something a
+    browser/API client can fetch.
+
+    This is the ONE place that decides how storage_path renders — every
+    caller across the engine (api.py, engine.py, suite_engine.py) must go
+    through this instead of re-deriving the rule, otherwise a Supabase URL
+    gets mangled into "/https://..." the moment cloud storage is enabled.
+    A Supabase Storage URL passes through untouched; a local repo-relative
+    path gets normalised (leading slash, forward slashes) so it resolves
+    through the /storage mount.
+    """
+    if not storage_path:
+        return None
+    if storage_path.startswith("http://") or storage_path.startswith("https://"):
+        return storage_path
+    return f"/{storage_path.replace(chr(92), '/')}"
+
+
 def _redact_hierarchy(xml_string: str) -> tuple[str, bool]:
     """Mask text on password-flagged EditText nodes before persisting (rule 51)."""
     redacted = False
@@ -141,7 +160,7 @@ def save_suite_video(suite_id: int, source_path: Path) -> Optional[str]:
         source_path.unlink()
     except OSError:
         pass
-    return str(dest.relative_to(STORAGE_ROOT.parent.parent))
+    return _persisted_path(dest, f"suites/{suite_id}/combined.mp4", data, "video/mp4")
 
 
 def save_appium_log(db: Session, execution_id: int, source_path: Optional[Path]) -> Optional[MobileEvidence]:
@@ -215,4 +234,10 @@ def save_video(db: Session, execution_id: int, source_path: Path) -> Optional[Mo
     db.add(row)
     db.commit()
     db.refresh(row)
+    # Transient attribute, not a mapped column: storage_path may now be a
+    # Supabase URL (see _persisted_path), so callers that need the file back
+    # on disk in the SAME process/run (suite-wide video concatenation) must
+    # not try to reverse-derive a path from it. `dest` is guaranteed to exist
+    # locally regardless of whether the cloud upload succeeded.
+    row.local_path = dest
     return row

@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import useSWR from 'swr'
 import { FileUp, FolderKanban, Play, X } from 'lucide-react'
 import { Button } from '../../../components/ui/Button'
 import { Card } from '../../../components/ui/Card'
@@ -11,7 +12,7 @@ import { Select } from '../../../components/ui/Select'
 import { Textarea } from '../../../components/ui/Textarea'
 import { AUTONOMOUS_FEATURES, BROWSERS, TEST_DEPTHS } from '../../../config/execution'
 import { api } from '../../../lib/api'
-import type { ExcelTestCase } from '../../../lib/types'
+import type { ExcelTestCase, Release } from '../../../lib/types'
 import { isAllProjects, useData } from '../../../contexts/DataContext'
 import { useToast } from '../../../contexts/ToastContext'
 import { parseScenarioText } from './scenarioParser'
@@ -42,6 +43,14 @@ export default function OneClickTestPage() {
   const [selectedCaseIds, setSelectedCaseIds] = useState<Set<string>>(new Set())
   const [excelUrl, setExcelUrl] = useState('')
   const [urlAutoDetected, setUrlAutoDetected] = useState<boolean | null>(null)
+
+  // Optional: tag this run with a release checkpoint. Left unselected,
+  // nothing about how the run works changes — this is purely a label.
+  const [releaseId, setReleaseId] = useState('')
+  const releases = useSWR<Release[]>(
+    activeProject && !isAllProjects(activeProject) ? ['releases', activeProject.id] : null,
+    () => api.listReleases(activeProject!.id),
+  )
 
   // The two paths are mutually exclusive, exactly as in the previous frontend:
   // an Excel batch runs the imported cases, a scenario runs the AI pipeline.
@@ -101,6 +110,7 @@ export default function OneClickTestPage() {
           devices: ['Desktop'],
           project_id: activeProject.id,
           suite_id: activeSuite?.id ?? null,
+          release_id: releaseId || null,
         })
         triggerToast(`Queued ${result.executionIds.length} runs from the Excel batch.`)
         if (result.executionIds[0]) navigate(`/app/execution/${result.executionIds[0]}`)
@@ -123,6 +133,7 @@ export default function OneClickTestPage() {
         customScenario: parsed.length > 0 ? parsed : null,
         rawScenario: scenarioText.trim() || null,
         enableAiEyes: features.aiEyes,
+        releaseId: releaseId || null,
       })
       triggerToast('Autonomous run queued.')
       if (result.executionIds[0]) navigate(`/app/execution/${result.executionIds[0]}`)
@@ -137,7 +148,7 @@ export default function OneClickTestPage() {
     return (
       <div>
         <PageHeader
-          title="One-Click Test"
+          title="Author Tests"
           description="Describe what you want tested and let the agent pipeline handle the rest."
         />
         <EmptyState
@@ -153,7 +164,7 @@ export default function OneClickTestPage() {
   return (
     <div>
       <PageHeader
-        title="One-Click Test"
+        title="Author Tests"
         description="Point it at a URL and describe the scenario, or upload a sheet of existing test cases."
       />
 
@@ -220,6 +231,20 @@ export default function OneClickTestPage() {
               {TEST_DEPTHS.map((option) => (
                 <option key={option} value={option}>
                   {option}
+                </option>
+              ))}
+            </Select>
+
+            <Select
+              label="Release (optional)"
+              value={releaseId}
+              onChange={(event) => setReleaseId(event.target.value)}
+              helperText="Tag this run so it shows up when comparing releases later. Create new ones from Reports → Compare Releases."
+            >
+              <option value="">No release</option>
+              {(releases.data ?? []).map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
                 </option>
               ))}
             </Select>
@@ -385,7 +410,7 @@ export default function OneClickTestPage() {
                   key={feature.key}
                   className={`flex cursor-pointer items-start gap-2.5 rounded-md border p-3 text-sm transition-colors ${
                     features[feature.key]
-                      ? 'border-accent bg-accent-soft/40'
+                      ? 'border-accent bg-selected'
                       : 'border-line hover:bg-paper'
                   }`}
                 >

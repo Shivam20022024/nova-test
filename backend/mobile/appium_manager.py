@@ -250,6 +250,82 @@ def create_uiautomator2_session(
     raise RuntimeError(f"UiAutomator2 session could not be created after 3 attempts: {last_exc}")
 
 
+def create_xcuitest_session(
+    appium_base_url: str,
+    device_udid: str,
+    bundle_id: Optional[str] = None,
+    no_reset: bool = False,
+    new_command_timeout: int = 120,
+):
+    """iOS/XCUITest adapter — SHAPE ONLY (integration plan Phase 6).
+
+    This builds valid XCUITestOptions capabilities and would create a real
+    Appium session against a Mac host running Xcode + the XCUITest driver —
+    but nothing in this codebase has been exercised against real iOS
+    hardware or a simulator, because no macOS host exists in this
+    environment (XCUITest execution is only possible from a Mac). This
+    matches exactly what the mobile sprint plan asked for at this stage:
+    "adapter + simulator path... real device validation after hardware
+    availability." A successful call here proves the capability shape is
+    correct, not that iOS execution works end-to-end — that still needs a
+    real Mac-hosted Appium server to point `appium_base_url` at.
+
+    Real-device signing (xcodeOrgId/xcodeSigningId) is deliberately left
+    unset — it only makes sense once real Apple Developer credentials exist
+    to configure it with, and guessing a value would be worse than omitting
+    it.
+    """
+    from appium import webdriver
+    from appium.options.ios import XCUITestOptions
+
+    options = XCUITestOptions()
+    options.platform_name = "iOS"
+    options.automation_name = "XCUITest"
+    options.udid = device_udid
+    options.new_command_timeout = new_command_timeout
+    options.no_reset = no_reset
+    if bundle_id:
+        options.bundle_id = bundle_id
+
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, 4):
+        try:
+            return webdriver.Remote(appium_base_url, options=options)
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("XCUITest session create attempt %d/3 failed: %s", attempt, str(exc)[:300])
+            time.sleep(5)
+    raise RuntimeError(f"XCUITest session could not be created after 3 attempts: {last_exc}")
+
+
+def create_session(
+    platform: Optional[str],
+    appium_base_url: str,
+    device_serial: str,
+    app_path: Optional[str] = None,
+    app_package: Optional[str] = None,
+    app_activity: Optional[str] = None,
+    no_reset: bool = False,
+    new_command_timeout: int = 120,
+):
+    """Platform dispatcher: Android (UiAutomator2) is the proven, real path
+    this whole engine has run on all along; iOS (XCUITest) is the adapter
+    shape described in create_xcuitest_session's docstring above. `platform`
+    is expected to be MobileApplication.platform ("android" | "ios"), which
+    already exists as a column with an "android" default — every existing
+    caller that doesn't pass a platform, or passes "android", is completely
+    unaffected by this function existing."""
+    if (platform or "android").strip().lower() == "ios":
+        return create_xcuitest_session(
+            appium_base_url, device_serial, bundle_id=app_package,
+            no_reset=no_reset, new_command_timeout=new_command_timeout,
+        )
+    return create_uiautomator2_session(
+        appium_base_url, device_serial, app_path=app_path, app_package=app_package,
+        app_activity=app_activity, no_reset=no_reset, new_command_timeout=new_command_timeout,
+    )
+
+
 def quit_session(driver) -> None:
     if driver is None:
         return

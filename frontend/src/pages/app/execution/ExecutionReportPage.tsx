@@ -18,6 +18,7 @@ import type { ExecutionDetail } from '../../../lib/types'
 import { normalizeExecutionReport } from '../../../features/report/reportTransform'
 import type { NormalizedReport } from '../../../features/report/reportTransform'
 import { generateReportPdf, generateReportJson } from '../../../features/report/reportExport'
+import { ReportSection } from '../../../features/report/ReportSection'
 import { useToast } from '../../../contexts/ToastContext'
 import { ExecutionSteps } from './components/ExecutionSteps'
 import type { StepLog } from './components/ExecutionSteps'
@@ -93,15 +94,6 @@ type ScenarioRow = {
   totalSteps: number
   passedSteps: number
   failedSteps: number
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="border-t border-line py-8 print:break-inside-avoid">
-      <h2 className="font-serif text-xl text-ink">{title}</h2>
-      <div className="mt-4">{children}</div>
-    </section>
-  )
 }
 
 export default function ExecutionReportPage() {
@@ -315,17 +307,17 @@ export default function ExecutionReportPage() {
         <StatTile label="Self-healed" value={summary.selfHealedCount ?? 0} />
       </div>
 
-      <Section title="Quality scorecard">
+      <ReportSection title="Quality scorecard">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <StatTile label="Functional" value={quality?.functionalScore ?? 'N/A'} unit={quality?.functionalScore != null ? '%' : ''} />
           <StatTile label="Accessibility" value={quality?.a11yScore ?? 'N/A'} unit={quality?.a11yScore != null ? '%' : ''} />
           <StatTile label="Security" value={quality?.secScore ?? 'N/A'} unit={quality?.secScore != null ? '%' : ''} />
           <StatTile label="DOM stability" value={quality?.stabilityScore ?? 'N/A'} unit={quality?.stabilityScore != null ? '%' : ''} />
         </div>
-      </Section>
+      </ReportSection>
 
       {distributionSlices.length > 0 && (
-        <Section title="Test result distribution">
+        <ReportSection title="Test result distribution">
           <Card className="flex flex-col items-center gap-4 p-5 sm:flex-row sm:items-start">
             <DonutChart
               data={distributionSlices}
@@ -347,10 +339,10 @@ export default function ExecutionReportPage() {
               ))}
             </ul>
           </Card>
-        </Section>
+        </ReportSection>
       )}
 
-      <Section title="Release decision">
+      <ReportSection title="Release decision">
         <Card className="p-5">
           <div className="flex flex-wrap items-center gap-3">
             <StatusBadge
@@ -377,9 +369,9 @@ export default function ExecutionReportPage() {
             </ul>
           )}
         </Card>
-      </Section>
+      </ReportSection>
 
-      <Section title="Summary">
+      <ReportSection title="Summary">
         <Card className="p-5">
           <p className="text-sm whitespace-pre-wrap text-ink-soft">
             {ai.narrative || summary.aiSummaryText || 'No summary was generated for this run.'}
@@ -392,18 +384,18 @@ export default function ExecutionReportPage() {
             </ul>
           )}
         </Card>
-      </Section>
+      </ReportSection>
 
       {scenarioRows.length > 0 && (
-        <Section title="Test scenarios execution results">
+        <ReportSection title="Test scenarios execution results">
           <div className="rounded-md border border-line bg-paper-alt">
             <DataTable columns={scenarioColumns} rows={scenarioRows} getRowKey={(row) => row.id} />
           </div>
-        </Section>
+        </ReportSection>
       )}
 
       {Array.isArray(timeline) && timeline.length > 0 && (
-        <Section title="Execution timeline">
+        <ReportSection title="Execution timeline">
           <ol className="flex flex-col gap-1.5">
             {timeline.slice(0, 300).map((event: Record<string, any>, index: number) => (
               <li
@@ -430,10 +422,10 @@ export default function ExecutionReportPage() {
               Showing the first 300 of {timeline.length} events. Full detail is in Export JSON.
             </p>
           )}
-        </Section>
+        </ReportSection>
       )}
 
-      <Section title="Accessibility & security">
+      <ReportSection title="Accessibility & security">
         <div className="grid gap-4 sm:grid-cols-2">
           <Card className="p-5">
             <h3 className="font-sans text-sm font-semibold text-ink">Accessibility</h3>
@@ -455,10 +447,10 @@ export default function ExecutionReportPage() {
             {security.scope && <p className="mt-2 text-xs text-ink-soft">{security.scope}</p>}
           </Card>
         </div>
-      </Section>
+      </ReportSection>
 
       {Array.isArray(ai.observations) && ai.observations.length > 0 && (
-        <Section title="Observations">
+        <ReportSection title="Observations">
           <ul className="flex flex-col gap-2">
             {ai.observations.map((observation: Record<string, string>, index: number) => (
               <li key={index} className="rounded-md border border-line bg-paper-alt p-3">
@@ -470,21 +462,21 @@ export default function ExecutionReportPage() {
               </li>
             ))}
           </ul>
-        </Section>
+        </ReportSection>
       )}
 
       {Array.isArray(ai.recommendations) && ai.recommendations.length > 0 && (
-        <Section title="Recommended actions">
+        <ReportSection title="Recommended actions">
           <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm text-ink-soft">
             {ai.recommendations.map((recommendation: string, index: number) => (
               <li key={index}>{recommendation}</li>
             ))}
           </ul>
-        </Section>
+        </ReportSection>
       )}
 
       {riskRows.length > 0 && (
-        <Section title="Release risk matrix">
+        <ReportSection title="Release risk matrix">
           <div className="flex flex-col gap-2">
             {riskRows.map((row) => (
               <div key={row.risk} className="rounded-md border border-line bg-paper-alt p-3">
@@ -507,14 +499,14 @@ export default function ExecutionReportPage() {
               </div>
             ))}
           </div>
-        </Section>
+        </ReportSection>
       )}
 
-      <Section title="Steps">
+      <ReportSection title="Steps">
         <ExecutionSteps steps={steps} />
-      </Section>
+      </ReportSection>
 
-      <Section title="Technical appendix">
+      <ReportSection title="Technical appendix">
         <Card className="p-5">
           <dl className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-3">
             <div>
@@ -571,10 +563,10 @@ export default function ExecutionReportPage() {
             execution's Trace &amp; Plan tab.
           </p>
         </Card>
-      </Section>
+      </ReportSection>
 
       {Array.isArray(evidence.screenshots) && evidence.screenshots.length > 0 && (
-        <Section title="Evidence">
+        <ReportSection title="Evidence">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {evidence.screenshots.map((shot: { id?: string; url: string }, index: number) => (
               <a
@@ -588,7 +580,7 @@ export default function ExecutionReportPage() {
               </a>
             ))}
           </div>
-        </Section>
+        </ReportSection>
       )}
     </div>
   )

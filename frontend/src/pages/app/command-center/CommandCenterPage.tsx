@@ -1,8 +1,9 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { Activity, RefreshCw } from 'lucide-react'
 import { Button } from '../../../components/ui/Button'
 import { Card } from '../../../components/ui/Card'
+import { Chip } from '../../../components/ui/Chip'
 import { EmptyState } from '../../../components/ui/EmptyState'
 import { ErrorState } from '../../../components/ui/ErrorState'
 import { PageHeader } from '../../../components/ui/PageHeader'
@@ -19,8 +20,17 @@ import type {
   DashboardSummary,
   ExecutionTrendPoint,
   RecentExecutionItem,
+  RunSource,
 } from '../../../lib/types'
 import { RecentExecutionsSection } from './sections/RecentExecutionsSection'
+
+type SourceFilter = RunSource | 'all'
+
+const SOURCE_FILTERS: Array<{ id: SourceFilter; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'web', label: 'Web' },
+  { id: 'mobile', label: 'Mobile' },
+]
 
 /** Matches the previous dashboard: telemetry refreshes on a 30s cadence. */
 const REFRESH_MS = 30_000
@@ -55,6 +65,7 @@ function DashboardSkeleton() {
 export default function CommandCenterPage() {
   const { environment } = useAppShell()
   const { activeProject, scopedProjectId } = useData()
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
 
   // scopedProjectId is undefined for "All Projects", which the backend reads as
   // "no filter". It is part of each key so switching project refetches.
@@ -110,7 +121,26 @@ export default function CommandCenterPage() {
   }
 
   const totalRuns = browserSlices.reduce((sum, slice) => sum + slice.value, 0)
-  const hasExecutions = (summary.data?.totalExecutions ?? 0) > 0
+
+  // The stat tiles below read whichever slice of `summary` matches the
+  // filter — 'web' fields sit at the top level (pre-dating mobile support),
+  // 'mobile' and 'combined' are nested. avgDuration has no combined figure:
+  // averaging across two structurally different run types (browser vs.
+  // device) isn't a meaningful single number, so 'all' just omits it.
+  const viewStats = useMemo(() => {
+    if (!summary.data) return null
+    if (sourceFilter === 'mobile') return summary.data.mobile
+    if (sourceFilter === 'all') return { ...summary.data.combined, avgDuration: null as number | null }
+    return summary.data
+  }, [summary.data, sourceFilter])
+
+  const visibleRecent = useMemo(
+    () =>
+      (recent.data ?? []).filter((item) => sourceFilter === 'all' || (item.source ?? 'web') === sourceFilter),
+    [recent.data, sourceFilter],
+  )
+
+  const hasExecutions = (viewStats?.totalExecutions ?? 0) > 0
 
   return (
     <div>
@@ -130,6 +160,15 @@ export default function CommandCenterPage() {
           </Button>
         }
       />
+
+      <div className="mb-6 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium text-muted">Show:</span>
+        {SOURCE_FILTERS.map((filter) => (
+          <Chip key={filter.id} active={sourceFilter === filter.id} onClick={() => setSourceFilter(filter.id)}>
+            {filter.label}
+          </Chip>
+        ))}
+      </div>
 
       {error ? (
         <ErrorState
@@ -153,19 +192,23 @@ export default function CommandCenterPage() {
       ) : (
         <div className="flex flex-col gap-8">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <StatTile label="Executions" value={summary.data?.totalExecutions ?? 0} />
-            <StatTile label="Success rate" value={summary.data?.successRate ?? 0} unit="%" />
-            <StatTile label="Passed" value={summary.data?.passedCount ?? 0} />
-            <StatTile label="Failed" value={summary.data?.failedCount ?? 0} />
-            <StatTile label="Avg duration" value={summary.data?.avgDuration ?? 0} unit="s" />
-            <StatTile label="Self-healed" value={summary.data?.selfHealingCount ?? 0} />
+            <StatTile label="Executions" value={viewStats?.totalExecutions ?? 0} />
+            <StatTile label="Success rate" value={viewStats?.successRate ?? 0} unit="%" />
+            <StatTile label="Passed" value={viewStats?.passedCount ?? 0} />
+            <StatTile label="Failed" value={viewStats?.failedCount ?? 0} />
+            <StatTile
+              label="Avg duration"
+              value={viewStats?.avgDuration ?? '—'}
+              unit={viewStats?.avgDuration != null ? 's' : undefined}
+            />
+            <StatTile label="Self-healed" value={viewStats?.selfHealingCount ?? 0} />
           </div>
 
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
             <Card className="p-5">
               <div className="mb-4 flex items-baseline justify-between gap-2">
                 <h2 className="font-sans text-sm font-semibold text-ink">Execution trend</h2>
-                <span className="font-mono text-xs text-muted">Last {TREND_DAYS} days</span>
+                <span className="font-mono text-xs text-muted">Web + mobile · last {TREND_DAYS} days</span>
               </div>
               {trendPoints.length > 0 ? (
                 <LineTrendChart data={trendPoints} height={220} />
@@ -201,11 +244,11 @@ export default function CommandCenterPage() {
           </div>
 
           <div>
-            {(recent.data?.length ?? 0) > 0 ? (
-              <RecentExecutionsSection items={recent.data ?? []} />
+            {visibleRecent.length > 0 ? (
+              <RecentExecutionsSection items={visibleRecent} />
             ) : (
               <p className="rounded-md border border-line bg-paper-alt px-4 py-8 text-center text-sm text-muted">
-                No recent executions for this project.
+                No recent {sourceFilter === 'all' ? '' : `${sourceFilter} `}executions for this project.
               </p>
             )}
           </div>

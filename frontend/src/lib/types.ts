@@ -18,6 +18,27 @@ export type Project = {
   updatedAt: string
 }
 
+/** A named checkpoint you can tag test runs with — e.g. "1.0", "August
+ *  Release", "Sprint 14". Purely a label inside NovaTest for grouping and
+ *  comparing results later; the name is free text, never validated against
+ *  a version format. */
+export type Release = {
+  id: string
+  projectId: string
+  name: string
+  description: string | null
+  createdAt: string
+}
+
+/** One release's aggregate web + mobile stats, as returned by
+ *  GET /api/v1/releases/compare — see backend-node's routes/releases.ts. */
+export type ReleaseComparisonEntry = {
+  releaseId: string
+  release: Release | null
+  web: { totalExecutions: number; passedCount: number; failedCount: number; successRate: number }
+  mobile: { totalExecutions: number; passedCount: number; failedCount: number; successRate: number }
+}
+
 /** A suite's `type` decides which execution pipeline a run uses. */
 export type SuiteType = 'WEB' | 'API' | 'DB'
 
@@ -78,7 +99,11 @@ export type Artifact = {
   createdAt: string
 }
 
-export type HealingEventStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
+/** 'APPLIED' is what every new heal gets going forward — AutoHeal applies
+ *  the fix automatically and saves it into the test, no approval needed.
+ *  'PENDING' | 'APPROVED' | 'REJECTED' are kept only so old rows already in
+ *  the database still type-check; nothing produces them anymore. */
+export type HealingEventStatus = 'APPLIED' | 'PENDING' | 'APPROVED' | 'REJECTED'
 
 export type HealingEvent = {
   id: string
@@ -171,7 +196,29 @@ export type DashboardSummary = {
   successRate: number
   /** Seconds, already rounded by the backend. */
   avgDuration: number
+  /** Same shape, mobile-engine executions only — see backend-node's dashboard.ts. */
+  mobile: {
+    totalExecutions: number
+    passedCount: number
+    failedCount: number
+    selfHealingCount: number
+    successRate: number
+    avgDuration: number
+  }
+  /** Web + mobile summed. avgDuration is omitted — averaging across two very
+   *  differently-shaped run types isn't a meaningful single number. */
+  combined: {
+    totalExecutions: number
+    passedCount: number
+    failedCount: number
+    selfHealingCount: number
+    successRate: number
+  }
 }
+
+/** Which testing vertical produced a run — used to filter/badge the
+ *  dashboard's recent-executions feed and its trend/summary stats. */
+export type RunSource = 'web' | 'mobile'
 
 export type ExecutionTrendPoint = {
   date: string
@@ -184,6 +231,22 @@ export type BrowserDistributionEntry = {
   count: number
 }
 
+/** See backend-node's dashboard.ts release-readiness handler for the exact,
+ *  disclosed rules behind `verdict` — three fixed thresholds, not a model. */
+export type ReleaseReadiness = {
+  verdict: 'GO' | 'GO_WITH_RISK' | 'NO_GO' | 'INCONCLUSIVE'
+  /** 0-100, or null when there's no execution history yet to score. */
+  score: number | null
+  reasons: string[]
+  window: number
+  failedCount: number
+  /** Percentage, e.g. 12.5 for 12.5%. */
+  failureRate: number
+  recentDefectCount: number
+  mobileDefectTrackingNote: string
+  generatedAt: string
+}
+
 /**
  * `recent-executions` returns a mixed list: plain runs, plus one collapsed
  * folder per Excel batch. Statuses here are lower-cased by the backend, unlike
@@ -191,6 +254,8 @@ export type BrowserDistributionEntry = {
  */
 export type RecentExecutionRow = {
   type: 'execution'
+  /** Absent on older cached rows — treat as 'web' (see toRunSource). */
+  source?: RunSource
   id: string
   run_id: string
   testName: string
@@ -204,6 +269,7 @@ export type RecentExecutionRow = {
 
 export type RecentExecutionFolder = {
   type: 'folder'
+  source?: RunSource
   id: string
   batchId: string
   name: string
@@ -367,6 +433,9 @@ export type MobileLocator = {
 export type MobileTestStep = {
   action: string
   locator: MobileLocator | null
+  /** Alternate real identifiers for the same element as `locator`, recorded
+   *  at generation time so a rename resolves silently on the next run. */
+  fallback_locators?: MobileLocator[] | null
   value?: string | null
   timeout_ms?: number
   risk?: 'LOW_RISK' | 'MEDIUM_RISK' | 'HIGH_RISK' | 'CRITICAL'
@@ -398,7 +467,7 @@ export const MOBILE_TERMINAL_STATUSES: readonly MobileExecutionStatus[] = [
 export type MobileStepResult = {
   step_index: number
   action: string
-  status: 'PASSED' | 'FAILED' | 'HEALED' | 'SKIPPED' | 'BLOCKED'
+  status: 'PASSED' | 'FAILED' | 'HEALED' | 'SKIPPED' | 'BLOCKED' | 'FALLBACK_RESOLVED'
   locator: MobileLocator | null
   resolved_locator: MobileLocator | null
   actual: string | null
@@ -414,6 +483,9 @@ export type MobileExecution = {
   test_id: number
   test_name?: string | null
   device_id: number | null
+  /** Only present on a single-execution fetch (getExecution) — the list
+   *  endpoint's rows don't include it. */
+  environment?: string
   started_at: string | null
   completed_at: string | null
   duration_ms: number | null
@@ -451,6 +523,9 @@ export type MobileSuite = {
   passed_count: number
   failed_count: number
   skipped_count: number
+  /** Tests stuck at BLOCKED/CANCELLED/REQUIRES_REVIEW/WAITING_APPROVAL — never
+   *  reached a verdict, so kept out of failed_count (see mobileStatus.ts). */
+  blocked_count: number
   combined_video_url: string | null
   created_at: string | null
   completed_at: string | null
@@ -482,6 +557,32 @@ export type MobileHealingRecord = {
     | 'PENDING_VALIDATION' | 'APPLIED' | 'VALIDATED' | 'VALIDATION_FAILED'
     | 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED' | 'ROLLED_BACK' | 'REQUIRES_REVIEW'
   reason: string | null
+  created_at: string | null
+}
+
+/** One device's outcome inside a compatibility run — the same test executed
+ *  concurrently on several devices (see MobileCompatibilityRun). */
+export type MobileCompatibilityDeviceRow = {
+  execution_id: number
+  device_id: number | null
+  device_label: string | null
+  status: MobileExecutionStatus | 'QUEUED'
+  duration_ms: number | null
+  failure_summary: unknown
+}
+
+/** One test fanned out across N devices at once, run concurrently, with a
+ *  per-device pass/fail report — distinct from a single MobileExecution. */
+export type MobileCompatibilityRun = {
+  id: number
+  test_id: number
+  test_name: string | null
+  status: 'RUNNING' | 'COMPLETED'
+  created_at: string | null
+  completed_at: string | null
+  device_count: number
+  passed_count: number
+  devices: MobileCompatibilityDeviceRow[]
 }
 
 export type MobileCapabilities = {
@@ -501,6 +602,7 @@ export type MobileCapabilities = {
 export type MobileGenerateResult = {
   steps: MobileTestStep[]
   warnings: string[]
+  plan_summary: string[]
   grounded: boolean
   screen_map_screens: number
   grounding_element_count: number

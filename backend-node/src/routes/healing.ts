@@ -38,103 +38,10 @@ router.get('/', async (req: AuthRequest, res) => {
   }
 });
 
-// POST /api/v1/healing/:id/approve
-router.post('/:id/approve', async (req: AuthRequest, res) => {
-  try {
-    const id = req.params.id as string;
-
-    const { data: event, error: eventErr } = await supabase
-      .from('HealingEvent')
-      .select('*, executionLog:ExecutionLog(*)')
-      .eq('id', id)
-      .maybeSingle();
-    if (eventErr) throw eventErr;
-    if (!event) return res.status(404).json({ error: 'Not found' });
-
-    // We need to find the TestRun that matches event.testName in the suite
-    const suiteId = event.executionLog?.suiteId;
-    if (suiteId && event.testName) {
-       const { data: testRun, error: testRunErr } = await supabase
-         .from('TestRun')
-         .select('*')
-         .eq('suiteId', suiteId)
-         .eq('name', event.testName)
-         .maybeSingle();
-       if (testRunErr) throw testRunErr;
-
-       if (testRun) {
-         let steps = [];
-         try {
-           steps = JSON.parse(testRun.steps);
-         } catch(e) {}
-
-         // If we have stepIndex, we can update it
-         if (event.stepIndex && steps.length >= event.stepIndex) {
-           const stepToUpdate = steps[event.stepIndex - 1]; // stepIndex is 1-based in Python
-           if (stepToUpdate && stepToUpdate.selector === event.originalSelector) {
-             stepToUpdate.selector = event.healedSelector;
-           } else {
-             // Fallback: just search for the selector anywhere in the steps
-             for (const step of steps) {
-               if (step.selector === event.originalSelector) {
-                 step.selector = event.healedSelector;
-               }
-             }
-           }
-
-           const { error: updateErr } = await supabase
-             .from('TestRun')
-             .update({ steps: JSON.stringify(steps) })
-             .eq('id', testRun.id);
-           if (updateErr) throw updateErr;
-         } else {
-            // Fallback: just search for the selector anywhere in the steps
-             for (const step of steps) {
-               if (step.selector === event.originalSelector) {
-                 step.selector = event.healedSelector;
-               }
-             }
-             const { error: updateErr } = await supabase
-               .from('TestRun')
-               .update({ steps: JSON.stringify(steps) })
-               .eq('id', testRun.id);
-             if (updateErr) throw updateErr;
-         }
-       }
-    }
-
-    const { data: updated, error: approveErr } = await supabase
-      .from('HealingEvent')
-      .update({ status: 'APPROVED' })
-      .eq('id', id)
-      .select()
-      .single();
-    if (approveErr) throw approveErr;
-
-    res.json(updated);
-  } catch (err: any) {
-    console.error('Error approving healing event:', err);
-    res.status(500).json({ error: 'Failed to approve healing event' });
-  }
-});
-
-// POST /api/v1/healing/:id/reject
-router.post('/:id/reject', async (req: AuthRequest, res) => {
-  try {
-    const id = req.params.id as string;
-
-    const { data: updated, error } = await supabase
-      .from('HealingEvent')
-      .update({ status: 'REJECTED' })
-      .eq('id', id)
-      .select()
-      .single();
-    if (error) throw error;
-
-    res.json(updated);
-  } catch (err: any) {
-    res.status(500).json({ error: 'Failed to reject healing event' });
-  }
-});
+// POST /:id/approve and /:id/reject were removed: AutoHeal no longer parks
+// a successful heal as PENDING waiting for a human decision — the fix is
+// applied to the saved test automatically the moment it's found (see
+// utils/healingPersistence.ts, called from queue/executionWorker.ts).
+// HealingEvent rows are now a read-only log.
 
 export default router;

@@ -47,6 +47,9 @@ import aiRoutes from './routes/ai';
 import autonomousRoutes from './routes/autonomous';
 import jiraRoutes from './routes/jira';
 import healingRoutes from './routes/healing';
+import visualRoutes from './routes/visual';
+import ciRoutes from './routes/ci';
+import releasesRoutes from './routes/releases';
 
 app.use('/api/v1/suites', suitesRoutes);
 app.use('/api/v1/executions', executionRoutes);
@@ -57,6 +60,9 @@ app.use('/api/v1/ai', aiRoutes);
 app.use('/api/v1/autonomous', autonomousRoutes);
 app.use('/api/v1/jira', jiraRoutes);
 app.use('/api/v1/healing', healingRoutes);
+app.use('/api/v1/visual', visualRoutes);
+app.use('/api/v1/ci', ciRoutes);
+app.use('/api/v1/releases', releasesRoutes);
 
 // Ensure Supabase buckets exist
 ensureBucketsExist().catch(console.error);

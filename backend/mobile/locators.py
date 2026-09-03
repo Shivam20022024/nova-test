@@ -113,6 +113,71 @@ def _escape_uiautomator_string(value: str) -> str:
 
 
 def _find_by_strategy(driver, strategy: str, value: str, prefer_clickable: bool = False):
+    """Wraps `_find_by_strategy_once` with a single scroll-and-retry: a text
+    lookup that fails outright (not "found but wrong," genuinely absent from
+    the current hierarchy) is, in a scrollable list, usually just off-screen
+    rather than actually missing — the same real gap SCROLL_TO_TEXT exists to
+    close when authored explicitly, just applied automatically so a plain TAP
+    on an item further down a list doesn't need every test to spell out its
+    own scroll step first. Only retried for text/text_contains — the other
+    strategies (resource-id, accessibility-id, ...) don't have a text value
+    to hand UiScrollable, and xpath/class_name lookups are positional, so
+    scrolling wouldn't change whether they resolve."""
+    from selenium.common.exceptions import NoSuchElementException
+
+    try:
+        return _find_by_strategy_once(driver, strategy, value, prefer_clickable=prefer_clickable)
+    except NoSuchElementException:
+        if strategy not in ("text", "text_contains") or not _scroll_into_view(driver, value):
+            raise
+        return _find_by_strategy_once(driver, strategy, value, prefer_clickable=prefer_clickable)
+
+
+def _scroll_into_view(driver, text: str, max_swipes: int = 8) -> bool:
+    """Swipe up, checking after each swipe, until `text` appears somewhere in
+    the hierarchy or `max_swipes` is exhausted. Returns whether it was found.
+
+    Deliberately NOT UiScrollable's own scrollIntoView: that swipes within
+    whatever bounds the scrollable container itself reports, which on a
+    gesture-navigation device (no on-screen back/home buttons, swipe up from
+    the very bottom edge instead) can start or end inside the OS's bottom
+    gesture strip — turning what's meant to be a content scroll into a
+    system "go home" gesture and exiting the app entirely mid-test. Confirmed
+    live: this is exactly what happened before this fix. Swiping within an
+    explicit 10%-90% vertical box (mirroring the existing generic SWIPE
+    action's own safe bounds) keeps every touch point well clear of that
+    strip regardless of device or screen size — nothing app-specific here."""
+    from selenium.common.exceptions import NoSuchElementException
+    text = text.strip()
+    if not text:
+        return False
+
+    for _ in range(max_swipes):
+        try:
+            nodes = parse_hierarchy(capture_hierarchy_xml(driver))
+        except Exception:
+            return False
+        if any(text in (n.attrs.get("text") or "") or text in (n.attrs.get("content-desc") or "") for n in nodes):
+            return True
+        try:
+            size = driver.get_window_size()
+            driver.execute_script("mobile: swipeGesture", {
+                "left": int(size["width"] * 0.1), "top": int(size["height"] * 0.1),
+                "width": int(size["width"] * 0.8), "height": int(size["height"] * 0.8),
+                "direction": "up", "percent": 0.75,
+            })
+            wait_for_stable_content(driver, timeout_ms=4000)
+        except Exception:
+            return False
+
+    try:
+        nodes = parse_hierarchy(capture_hierarchy_xml(driver))
+        return any(text in (n.attrs.get("text") or "") or text in (n.attrs.get("content-desc") or "") for n in nodes)
+    except Exception:
+        return False
+
+
+def _find_by_strategy_once(driver, strategy: str, value: str, prefer_clickable: bool = False):
     """`prefer_clickable` matters for text/text_contains only: many real apps
     reuse the exact same visible text for both a non-interactive screen title
     and a real button (e.g. a "Login" heading above a "Login" submit button).
@@ -183,9 +248,104 @@ def _find_by_strategy(driver, strategy: str, value: str, prefer_clickable: bool 
         try:
             return driver.find_element(by, clickable_selector)
         except (NoSuchElementException, InvalidSelectorException):
-            pass  # fall through to the unfiltered query below
+            pass  # fall through below
+
+        # No element has this exact text AND is itself clickable — the
+        # common real cause is a card/list-item pattern where the text is a
+        # plain, non-interactive label and the actionable region is a
+        # sibling (an image) or ancestor (the card) instead. Rather than
+        # returning that non-clickable label as-is and letting a coordinate
+        # tap land on dead space, look for the nearest genuinely clickable
+        # element to wherever that label actually sits — same "which card is
+        # this" reasoning AutoHeal's candidate scoring uses, just applied up
+        # front so a plain "tap the item named X" locator resolves correctly
+        # on the first try instead of needing a failure+heal round trip.
+        # Generic: works for any repeated-card/list layout, not this app.
+        try:
+            anchor = driver.find_element(by, val)
+        except (NoSuchElementException, InvalidSelectorException):
+            anchor = None
+        if anchor is not None:
+            neighbor = _nearest_clickable_neighbor(driver, anchor)
+            if neighbor is not None:
+                return neighbor
+            return anchor
 
     return driver.find_element(by, val)
+
+
+def _nearest_clickable_neighbor(driver, anchor_element, radius: float = 500.0):
+    """The nearest clickable element to `anchor_element`'s position, or None
+    if nothing genuinely clickable is within `radius` px. Used when a literal
+    text match resolved to a non-interactive label — the actionable control
+    for that label (an image, an icon, an enclosing card) is usually its
+    nearest clickable neighbor on screen, not the label itself."""
+    try:
+        rect = anchor_element.rect
+        ax, ay = rect["x"] + rect["width"] / 2.0, rect["y"] + rect["height"] / 2.0
+    except Exception:
+        return None
+
+    try:
+        nodes = parse_hierarchy(capture_hierarchy_xml(driver))
+    except Exception:
+        return None
+
+    # A small icon-sized control (a star in a rating widget, a badge) often
+    # sits even closer to a card's title than the card's own main content
+    # region (its image) does — pure nearest-distance would prefer the small
+    # control every time, which is backwards for "what does this label
+    # represent." A substantial content region is the more reliable signal
+    # of "the thing this label names" when one is available at all; only
+    # fall back to whatever's nearest, regardless of size, when nothing
+    # roomy exists nearby (a plain icon-only list row, say). No size or
+    # count here is app-specific — this is just "prefer real content over a
+    # small decorative control" as a general layout heuristic.
+    SUBSTANTIAL_AREA_PX2 = 15000.0
+    candidates = []
+    for n in nodes:
+        if n.attrs.get("clickable") != "true":
+            continue
+        box = n.bounds_box
+        if not box:
+            continue
+        ncx, ncy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+        d = ((ncx - ax) ** 2 + (ncy - ay) ** 2) ** 0.5
+        # Reject an exact/near-exact overlap with the anchor's own position —
+        # that would just be the anchor's own clickable ancestor container,
+        # which the earlier `.clickable(true)` attempt already ruled out as
+        # not matching the text search; a real "different, nearby control"
+        # sits recognizably off to the side, not stacked on the same spot.
+        if d < 5 or d >= radius:
+            continue
+        area = max(0, box[2] - box[0]) * max(0, box[3] - box[1])
+        candidates.append((d, area, n))
+
+    if not candidates:
+        return None
+    substantial = [c for c in candidates if c[1] >= SUBSTANTIAL_AREA_PX2]
+    pool = substantial or candidates
+    best_node = min(pool, key=lambda c: c[0])[2]
+
+    from appium.webdriver.common.appiumby import AppiumBy
+    from selenium.common.exceptions import NoSuchElementException
+    # Positional XPath first, not resource-id: a repeated-card layout is
+    # exactly the case that led here, and every card's control shares the
+    # SAME resource-id — looking it up by ID again would silently grab the
+    # first card on screen regardless of which one was actually closest.
+    # The positional path is how the specific matched instance survives.
+    if best_node.path:
+        try:
+            return driver.find_element(AppiumBy.XPATH, best_node.path)
+        except NoSuchElementException:
+            pass
+    rid = best_node.attrs.get("resource-id")
+    if rid:
+        try:
+            return driver.find_element(AppiumBy.ID, rid)
+        except NoSuchElementException:
+            pass
+    return None
 
 
 import difflib as _difflib
@@ -220,16 +380,56 @@ def resolve_by_hint(driver, hint: str, want_role: str = "any"):
     visible = [n for n in nodes if (n.bounds_box and (n.bounds_box[2] - n.bounds_box[0]) > 0 and (n.bounds_box[3] - n.bounds_box[1]) > 0)]
     htok = _label_tokens(hint)
 
-    labels = [n for n in visible if (n.attrs.get("text") or n.attrs.get("content-desc"))]
+    # Excludes clickable elements: nearest-label borrowing exists for the
+    # unlabelled-input-next-to-its-static-caption pattern (a passive TextView
+    # describing a neighboring EditText), where the caption is never itself a
+    # separate control. A clickable neighbor is a DIFFERENT, independently
+    # actionable element (e.g. two icons sitting side by side in a toolbar —
+    # a sort icon next to a cart icon), not a caption for this one, so
+    # borrowing its text/content-desc as if it described the node next to it
+    # produces exactly the kind of false match that let an unrelated icon
+    # "impersonate" its neighbor's label. Same rule for any app: a header
+    # with several adjacent icon buttons is an extremely common layout.
+    labels = [n for n in visible if (n.attrs.get("text") or n.attrs.get("content-desc")) and n.attrs.get("clickable") != "true"]
+
+    # A label can also be an OWNED descendant of some other clickable control
+    # (a decorative icon or count badge nested a level or two inside a
+    # DIFFERENT button) rather than a free caption of its own — e.g. a "shows
+    # cart contents" icon nested inside the cart button, sitting physically
+    # close enough to also read as "nearest" to a completely unrelated
+    # sibling button (a sort icon next to it in the same toolbar). Group every
+    # node under the path of its nearest clickable ancestor-or-self, using the
+    # hierarchy's own positional-xpath `path` (a literal path prefix means a
+    # literal ancestor) — no coordinates or app knowledge involved — so a
+    # label only counts as "for" a node when they share that owner, blocking
+    # a label from being borrowed across sibling controls it doesn't belong
+    # to, the same way the plain clickable-neighbor exclusion above blocks a
+    # label from being borrowed FROM one.
+    clickable_paths = sorted(
+        (n.path for n in visible if n.attrs.get("clickable") == "true" and n.path),
+        key=len, reverse=True,
+    )
+
+    def _owner_group(path: str) -> Optional[str]:
+        if not path:
+            return None
+        for cp in clickable_paths:
+            if path == cp or path.startswith(cp + "/"):
+                return cp
+        return None
 
     def nearest_label_text(node) -> str:
         box = node.bounds_box
         if not box:
             return ""
+        node_group = _owner_group(node.path)
         cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
         best, best_d = "", 1e9
         for lb in labels:
             if lb is node:
+                continue
+            lb_group = _owner_group(lb.path)
+            if lb_group is not None and lb_group != node_group:
                 continue
             lbb = lb.bounds_box
             if not lbb:
@@ -252,7 +452,19 @@ def resolve_by_hint(driver, hint: str, want_role: str = "any"):
             continue
         own = " ".join(filter(None, [n.attrs.get("text", ""), n.attrs.get("content-desc", ""), n.attrs.get("resource-id", "")]))
         own_tok = _label_tokens(own)
-        near = nearest_label_text(n)
+        # Nearest-label borrowing exists for ONE pattern (see its own
+        # docstring): an element with no text/content-desc of its own — an
+        # icon, an unlabelled input — reading a nearby caption as if it were
+        # its label. An element that already HAS real text/content-desc
+        # speaks for itself and should never borrow a neighbor's — that's
+        # not filling a gap, it's contaminating a real signal with an
+        # unrelated one. Confirmed live: a long descriptive paragraph with
+        # its own complete sentence outscored the actual "Login" button
+        # purely because a page-title heading ("Login") happened to sit
+        # within the proximity radius — the paragraph never needed to
+        # borrow anything, it already had 140+ characters of its own text.
+        own_has_identity = bool((n.attrs.get("text") or "").strip() or (n.attrs.get("content-desc") or "").strip())
+        near = "" if own_has_identity else nearest_label_text(n)
         near_tok = _label_tokens(near)
         overlap = len(htok & (own_tok | near_tok))
         ratio = max(
@@ -262,13 +474,45 @@ def resolve_by_hint(driver, hint: str, want_role: str = "any"):
         s = overlap * 3 + ratio * 2
         if want_role == "input" and role == "input":
             s += 1.0  # a matching role is itself evidence when the hint is thin
+        if want_role in ("button", "toggle") and role in ("button", "toggle"):
+            # Same principle as the input bonus above, applied to the other
+            # side of a real, generic ambiguity: a screen's own page-title
+            # heading legitimately shares the same word as its submit button
+            # ("Login" heading, "Login" button) and can score identically on
+            # text/token match alone — confirmed live, an exact tie that fell
+            # to whichever happened to sit earlier in the hierarchy (the
+            # heading, not the button). want_role="button" already means
+            # "this step needs to actually DO something," so a candidate
+            # that's genuinely clickable/toggleable is strictly better
+            # evidence than a same-scoring plain text label for that —
+            # without this, a text-role candidate is never even at a
+            # disadvantage in a tie it has no business winning.
+            s += 1.0
         if s > 0:
             scored.append((s, n))
 
     if not scored:
         raise NoSuchElementException(f"resolve_by_hint: nothing matched hint {hint!r} (role={want_role})")
     scored.sort(key=lambda x: x[0], reverse=True)
-    best_node = scored[0][1]
+    best_score, best_node = scored[0]
+    # A bare "s > 0" let through near-zero-signal matches — a single stray
+    # fuzzy-ratio point from an otherwise unrelated element (wrong text, wrong
+    # resource-id, wrong neighbor) used to be accepted just as readily as a
+    # real match, silently binding the step to whatever screen junk happened
+    # to score highest. MIN_CONFIDENT_SCORE is the floor a genuine match
+    # reliably clears — one shared token (overlap=1 -> 3.0), a strong fuzzy
+    # match (ratio>=0.5 -> 1.0), or a role match on a thin input hint (1.0) —
+    # while pure noise (a few incidentally-shared characters) stays under it.
+    # Below it, this is honestly "nothing matched" and should raise the same
+    # as an empty candidate list, so AutoHeal takes over instead of the step
+    # silently asserting against the wrong element. Generic: no app, screen,
+    # or hint text is special-cased here.
+    MIN_CONFIDENT_SCORE = 1.0
+    if best_score < MIN_CONFIDENT_SCORE:
+        raise NoSuchElementException(
+            f"resolve_by_hint: best candidate for hint {hint!r} scored {best_score:.2f}, "
+            f"below the confidence floor ({MIN_CONFIDENT_SCORE}) — treating as not found."
+        )
 
     rid = best_node.attrs.get("resource-id")
     if rid:
@@ -330,7 +574,7 @@ def wait_for_element(driver, locator: Locator, timeout_ms: int = 10000, poll_int
     raise last_err or ElementNotFoundError(locator, [locator.strategy])
 
 
-def tap_element(driver, element) -> None:
+def tap_element(driver, element) -> bool:
     """Real touch simulation, not just a semantic click. Proven bug: Appium's
     element.click() can return success on a non-clickable element WITHOUT
     throwing and WITHOUT the app actually responding (the accessibility click
@@ -340,7 +584,14 @@ def tap_element(driver, element) -> None:
     which is a genuine touch event that Android's normal hit-testing will
     route to whatever is really interactive at that screen position (e.g. a
     clickable parent card wrapping a plain text label) — exactly what a real
-    user's finger does. Generic: no app-specific logic involved."""
+    user's finger does. Generic: no app-specific logic involved.
+
+    Returns True when the coordinate-tap fallback was used — the caller uses
+    this to decide whether it's worth confirming the tap actually did
+    anything, since that path has no built-in success signal the way
+    element.click() raising an exception would (a coordinate tap "succeeds"
+    even when it lands on dead space, e.g. a plain text label positioned
+    outside any clickable container, not just inside one)."""
     is_clickable = False
     try:
         is_clickable = element.get_attribute("clickable") == "true"
@@ -350,7 +601,7 @@ def tap_element(driver, element) -> None:
     if is_clickable:
         try:
             element.click()
-            return
+            return False
         except Exception:
             pass
 
@@ -359,10 +610,12 @@ def tap_element(driver, element) -> None:
         x = rect["x"] + rect["width"] // 2
         y = rect["y"] + rect["height"] // 2
         driver.tap([(x, y)], 50)
+        return True
     except Exception:
         # last resort — the semantic click, even though clickable=false
         # suggested it might not do anything.
         element.click()
+        return False
 
 
 # ── Element role / editability (generic, framework-agnostic) ──────────────
