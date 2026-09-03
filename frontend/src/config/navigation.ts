@@ -17,6 +17,7 @@ export type NavIconKey =
   | 'one-click-test'
   | 'code-generator'
   | 'tests'
+  | 'releases'
   | 'executions'
   | 'mobile-apps'
   | 'mobile-devices'
@@ -56,6 +57,7 @@ export const navGroups: NavGroup[] = [
       { label: 'Author Tests', href: '/app/one-click-test', icon: 'one-click-test' },
       { label: 'Code Generator', href: '/app/code-generator', icon: 'code-generator' },
       { label: 'Test Suites', href: '/app/tests', icon: 'tests' },
+      { label: 'Releases', href: '/app/releases', icon: 'releases' },
       { label: 'Executions', href: '/app/execution', icon: 'executions' },
     ],
   },

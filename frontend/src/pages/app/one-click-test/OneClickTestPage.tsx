@@ -47,10 +47,13 @@ export default function OneClickTestPage() {
   // Optional: tag this run with a release checkpoint. Left unselected,
   // nothing about how the run works changes — this is purely a label.
   const [releaseId, setReleaseId] = useState('')
+  const [sprintId, setSprintId] = useState('')
   const releases = useSWR<Release[]>(
     activeProject && !isAllProjects(activeProject) ? ['releases', activeProject.id] : null,
     () => api.listReleases(activeProject!.id),
   )
+  // Sprints for the chosen release (optional — no release picked, no sprints).
+  const sprints = useSWR(releaseId ? ['release-sprints', releaseId] : null, () => api.listReleaseSprints(releaseId))
 
   // The two paths are mutually exclusive, exactly as in the previous frontend:
   // an Excel batch runs the imported cases, a scenario runs the AI pipeline.
@@ -111,6 +114,7 @@ export default function OneClickTestPage() {
           project_id: activeProject.id,
           suite_id: activeSuite?.id ?? null,
           release_id: releaseId || null,
+          sprint_id: sprintId || null,
         })
         triggerToast(`Queued ${result.executionIds.length} runs from the Excel batch.`)
         if (result.executionIds[0]) navigate(`/app/execution/${result.executionIds[0]}`)
@@ -134,6 +138,7 @@ export default function OneClickTestPage() {
         rawScenario: scenarioText.trim() || null,
         enableAiEyes: features.aiEyes,
         releaseId: releaseId || null,
+        sprintId: sprintId || null,
       })
       triggerToast('Autonomous run queued.')
       if (result.executionIds[0]) navigate(`/app/execution/${result.executionIds[0]}`)
@@ -238,13 +243,31 @@ export default function OneClickTestPage() {
             <Select
               label="Release (optional)"
               value={releaseId}
-              onChange={(event) => setReleaseId(event.target.value)}
-              helperText="Tag this run so it shows up when comparing releases later. Create new ones from Reports → Compare Releases."
+              onChange={(event) => {
+                setReleaseId(event.target.value)
+                setSprintId('')
+              }}
+              helperText="Tag this run so it shows up when comparing releases later. Create new ones from the Releases page."
             >
               <option value="">No release</option>
               {(releases.data ?? []).map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name}
+                </option>
+              ))}
+            </Select>
+
+            <Select
+              label="Sprint (optional)"
+              value={sprintId}
+              onChange={(event) => setSprintId(event.target.value)}
+              disabled={!releaseId}
+              helperText={releaseId ? 'Attributes this run to a sprint for traceability.' : 'Pick a release first.'}
+            >
+              <option value="">No sprint</option>
+              {(sprints.data ?? []).map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
                 </option>
               ))}
             </Select>

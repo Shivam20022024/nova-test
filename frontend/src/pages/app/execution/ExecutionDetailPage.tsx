@@ -12,6 +12,7 @@ import type { ExecutionDetail, ExecutionPlan, ExecutionTrace } from '../../../li
 import { useExecutionSocket } from '../../../hooks/useExecutionSocket'
 import { useToast } from '../../../contexts/ToastContext'
 import { ExecutionStatusBadge } from './components/ExecutionStatusBadge'
+import { SprintReleaseChips } from './components/SprintReleaseChips'
 import { ExecutionSteps } from './components/ExecutionSteps'
 import type { StepLog } from './components/ExecutionSteps'
 
@@ -141,6 +142,12 @@ export default function ExecutionDetailPage() {
             <>
               <span className="text-line">·</span>
               <span>{(data.durationMs / 1000).toFixed(1)}s</span>
+            </>
+          )}
+          {(data.sprintId || data.releaseId) && (
+            <>
+              <span className="text-line">·</span>
+              <SprintReleaseChips sprintId={data.sprintId} releaseId={data.releaseId} />
             </>
           )}
         </>

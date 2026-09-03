@@ -25,6 +25,10 @@ const MobileExecutionReportPage = lazy(() => import('../pages/app/mobile/MobileE
 const ExecutionListPage = lazy(() => import('../pages/app/execution/ExecutionListPage'))
 const ExecutionDetailPage = lazy(() => import('../pages/app/execution/ExecutionDetailPage'))
 const ExecutionReportPage = lazy(() => import('../pages/app/execution/ExecutionReportPage'))
+const ReleasesPage = lazy(() => import('../pages/app/releases/ReleasesPage'))
+const ReleaseDetailPage = lazy(() => import('../pages/app/releases/ReleaseDetailPage'))
+const SprintDetailPage = lazy(() => import('../pages/app/releases/SprintDetailPage'))
+const ProjectTraceabilityPage = lazy(() => import('../pages/app/projects/ProjectTraceabilityPage'))
 const HealingPage = lazy(() => import('../pages/app/healing/HealingPage'))
 const ReportsPage = lazy(() => import('../pages/app/reports/ReportsPage'))
 const ReleaseReadinessPage = lazy(() => import('../pages/app/reports/ReleaseReadinessPage'))
@@ -80,6 +84,10 @@ export default function AppRouter() {
           <Route path="executions/:id/report" element={<MobileExecutionReportPage />} />
           <Route path="compatibility" element={<MobileCompatibilityPage />} />
         </Route>
+        <Route path="releases" element={<ReleasesPage />} />
+        <Route path="releases/:releaseId" element={<ReleaseDetailPage />} />
+        <Route path="releases/:releaseId/sprints/:sprintId" element={<SprintDetailPage />} />
+        <Route path="projects/:projectId/traceability" element={<ProjectTraceabilityPage />} />
         <Route path="execution" element={<ExecutionListPage />} />
         <Route path="execution/:id" element={<ExecutionDetailPage />} />
         <Route path="execution/:id/report" element={<ExecutionReportPage />} />

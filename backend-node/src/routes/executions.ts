@@ -6,6 +6,36 @@ import multer from 'multer';
 import { randomUUID } from 'crypto';
 import { ExcelBatchProcessor } from '../orchestrator/excelBatchProcessor';
 import redisConnection from '../lib/redis';
+import { resolveRunTraceability, TraceabilityError } from '../utils/traceabilityScope';
+
+/**
+ * Reads the OPTIONAL sprint / test-case / release context from a run request
+ * body (accepting both camelCase and snake_case), validates ownership +
+ * consistency, and returns the { sprintId, testRunId, releaseId } to persist.
+ * On any failure it sends the HTTP response and returns null — the caller must
+ * `return` when this returns null. When no context is supplied it returns all
+ * nulls and the run proceeds exactly as before.
+ */
+async function resolveTraceOrRespond(req: AuthRequest, res: any) {
+  try {
+    return await resolveRunTraceability(req.user?.id, {
+      sprintId: req.body?.sprintId ?? req.body?.sprint_id,
+      testRunId: req.body?.testRunId ?? req.body?.test_run_id,
+      releaseId: req.body?.releaseId ?? req.body?.release_id,
+    });
+  } catch (e: any) {
+    if (e instanceof TraceabilityError) {
+      res.status(e.status).json({ error: e.message });
+      return null;
+    }
+    throw e;
+  }
+}
+const traceCols = (t: { sprintId: string | null; testRunId: string | null; releaseId: string | null }) => ({
+  ...(t.releaseId ? { releaseId: t.releaseId } : {}),
+  ...(t.sprintId ? { sprintId: t.sprintId } : {}),
+  ...(t.testRunId ? { testRunId: t.testRunId } : {}),
+});
 
 const upload = multer({ storage: multer.memoryStorage() });
 const router = Router();
@@ -193,19 +223,21 @@ router.get('/:id/plan', async (req: AuthRequest, res) => {
 
 // POST /api/v1/executions/run
 router.post('/run', async (req: AuthRequest, res) => {
-  const { testName, suiteId, targetUrl, instruction, browser, testType, releaseId } = req.body;
+  const { testName, suiteId, targetUrl, instruction, browser, testType } = req.body;
 
   try {
+    const trace = await resolveTraceOrRespond(req, res);
+    if (!trace) return;
+
     const { data: execution, error } = await supabase
       .from('ExecutionLog')
       // testType (smoke/sanity/regression/e2e/functional — integration plan
-      // Phase 4) and releaseId (which named release this run counts
-      // towards) are both optional; omitting either leaves this row exactly
-      // as it always was.
+      // Phase 4) and the traceability fields (releaseId / sprintId / testRunId)
+      // are all optional; omitting them leaves this row exactly as it always was.
       .insert({
         suiteId, status: 'QUEUED', browser: browser || 'chromium',
         ...(testType ? { testType } : {}),
-        ...(releaseId ? { releaseId } : {}),
+        ...traceCols(trace),
       })
       .select()
       .single();
@@ -282,6 +314,9 @@ router.post('/run-multi-test', async (req: AuthRequest, res) => {
   }
 
   try {
+    const trace = await resolveTraceOrRespond(req, res);
+    if (!trace) return;
+
     const children = [];
     const executionIds = [];
 
@@ -368,7 +403,10 @@ router.post('/run-multi-test', async (req: AuthRequest, res) => {
             excelBatchId: isExcelCase ? excelBatchId : null,
             excelBatchName: isExcelCase ? excelBatchName : null,
             ...(test_type ? { testType: test_type } : {}),
-            ...(release_id ? { releaseId: release_id } : {}),
+            // sprint/release apply to the whole batch; a body-level testRunId
+            // only makes sense for a single logical test, never a multi-row
+            // Excel batch (Phase 5's /sprints/:id/run stamps testRunId per case).
+            ...traceCols(isExcelBatch ? { ...trace, testRunId: null } : trace),
           })
           .select()
           .single();
@@ -431,6 +469,9 @@ router.post('/run-api-test', async (req: AuthRequest, res) => {
   }
 
   try {
+    const trace = await resolveTraceOrRespond(req, res);
+    if (!trace) return;
+
     let validSuiteId = suite_id;
     if (!validSuiteId && project_id) {
       let { data: suite, error: suiteErr } = await supabase
@@ -466,7 +507,7 @@ router.post('/run-api-test', async (req: AuthRequest, res) => {
         targetUrl: null,
         description: typeof steps === 'string' ? steps : JSON.stringify(steps),
         ...(test_type ? { testType: test_type } : {}),
-        ...(release_id ? { releaseId: release_id } : {}),
+        ...traceCols(trace),
       })
       .select()
       .single();

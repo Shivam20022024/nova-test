@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Check, FolderKanban, Pencil, Trash2, X } from 'lucide-react'
 import { Button } from '../../../components/ui/Button'
 import { Card } from '../../../components/ui/Card'
@@ -201,6 +201,13 @@ export default function ProjectsPage() {
                     <p className="mt-3 font-mono text-xs text-muted">
                       Created {new Date(project.createdAt).toLocaleDateString()}
                     </p>
+
+                    <Link
+                      to={`/app/projects/${project.id}/traceability`}
+                      className="mt-2 font-mono text-xs text-accent hover:underline"
+                    >
+                      View traceability →
+                    </Link>
 
                     <div className="mt-4 flex items-center gap-2 border-t border-line pt-3">
                       {!isActive && (

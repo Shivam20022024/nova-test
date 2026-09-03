@@ -29,12 +29,19 @@ import type {
   MobileTest,
   MobileUploadResult,
   Project,
+  ProjectTraceability,
   QueuedRun,
   RecentExecutionItem,
   Release,
   ReleaseComparisonEntry,
   ReleaseReadiness,
+  Sprint,
+  SprintAssignment,
+  SprintResults,
+  SprintRunResult,
   TestCase,
+  TestCaseRegression,
+  TestCaseTraceability,
   TestSuite,
 } from './types'
 
@@ -274,6 +281,94 @@ export const api = {
     return this.request<ReleaseComparisonEntry[]>(`/api/v1/releases/compare?releaseIds=${q}`)
   },
 
+  /* -- Traceability: Releases → Sprints → Test Cases -------------------- */
+
+  getRelease(id: string) {
+    return this.request<Release>(`/api/v1/releases/${id}`)
+  },
+
+  updateRelease(
+    id: string,
+    patch: Partial<Pick<Release, 'name' | 'description' | 'status' | 'sequence' | 'startDate' | 'endDate'>>,
+  ) {
+    return this.request<Release>(`/api/v1/releases/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+  },
+
+  listReleaseSprints(releaseId: string) {
+    return this.request<Sprint[]>(`/api/v1/releases/${releaseId}/sprints`)
+  },
+
+  createSprint(payload: {
+    releaseId: string
+    name: string
+    sequence?: number
+    status?: Sprint['status']
+    startDate?: string | null
+    endDate?: string | null
+  }) {
+    return this.request<Sprint>('/api/v1/sprints', { method: 'POST', body: JSON.stringify(payload) })
+  },
+
+  getSprint(id: string) {
+    return this.request<Sprint>(`/api/v1/sprints/${id}`)
+  },
+
+  updateSprint(
+    id: string,
+    patch: Partial<Pick<Sprint, 'name' | 'sequence' | 'status' | 'startDate' | 'endDate'>>,
+  ) {
+    return this.request<Sprint>(`/api/v1/sprints/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+  },
+
+  deleteSprint(id: string) {
+    return this.request<null>(`/api/v1/sprints/${id}`, { method: 'DELETE' })
+  },
+
+  listSprintTestCases(sprintId: string) {
+    return this.request<SprintAssignment[]>(`/api/v1/sprints/${sprintId}/test-cases`)
+  },
+
+  assignSprintTestCases(sprintId: string, testRunIds: string[]) {
+    return this.request<{ assigned: number; skipped: number; assignments: SprintAssignment[] }>(
+      `/api/v1/sprints/${sprintId}/test-cases`,
+      { method: 'POST', body: JSON.stringify({ testRunIds }) },
+    )
+  },
+
+  unassignSprintTestCase(sprintId: string, testRunId: string) {
+    return this.request<null>(`/api/v1/sprints/${sprintId}/test-cases/${testRunId}`, { method: 'DELETE' })
+  },
+
+  carryForwardSprint(sprintId: string, fromSprintId: string) {
+    return this.request<{ carried: number; skipped: number; assignments: SprintAssignment[] }>(
+      `/api/v1/sprints/${sprintId}/carry-forward`,
+      { method: 'POST', body: JSON.stringify({ fromSprintId }) },
+    )
+  },
+
+  getSprintResults(sprintId: string) {
+    return this.request<SprintResults>(`/api/v1/sprints/${sprintId}/results`)
+  },
+
+  runSprint(sprintId: string, opts?: { testRunIds?: string[]; browsers?: string[] }) {
+    return this.request<SprintRunResult>(`/api/v1/sprints/${sprintId}/run`, {
+      method: 'POST',
+      body: JSON.stringify(opts ?? {}),
+    })
+  },
+
+  getTestCaseTraceability(testRunId: string) {
+    return this.request<TestCaseTraceability>(`/api/v1/test-cases/${testRunId}/traceability`)
+  },
+
+  getTestCaseRegression(testRunId: string) {
+    return this.request<TestCaseRegression>(`/api/v1/test-cases/${testRunId}/regression`)
+  },
+
+  getProjectTraceability(projectId: string) {
+    return this.request<ProjectTraceability>(`/api/v1/projects/${projectId}/traceability`)
+  },
+
   /* -- Executions ------------------------------------------------------ */
 
   getExecutions(projectId?: string) {
@@ -311,6 +406,10 @@ export const api = {
     excel_testcase_ids?: string[] | null
     antiBot?: unknown
     release_id?: string | null
+    /** Optional sprint context. When set, the backend derives release_id from
+     *  the sprint and rejects a conflicting one. Omit for today's behaviour. */
+    sprint_id?: string | null
+    test_run_id?: string | null
   }) {
     return this.request<QueuedRun>('/api/v1/executions/run-multi-test', {
       method: 'POST',
@@ -356,6 +455,9 @@ export const api = {
     enableAiEyes?: boolean
     antiBot?: unknown
     releaseId?: string | null
+    /** Optional sprint context (see runMultiTest). */
+    sprintId?: string | null
+    testRunId?: string | null
   }) {
     return this.request<QueuedRun>('/api/v1/autonomous/run', {
       method: 'POST',

@@ -2,12 +2,53 @@ import { Router } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { supabase } from '../utils/storage';
 import { executionQueue, flowProducer, executionQueueName } from '../queue/executionWorker';
+import { resolveRunTraceability, TraceabilityError } from '../utils/traceabilityScope';
 
 const router = Router();
 
 // POST /api/v1/autonomous/run
 router.post('/run', async (req: AuthRequest, res) => {
-  const { targetUrl, credentials, depth, features, projectId, mode, customScenario, rawScenario, browsers, enableAiEyes, antiBot, releaseId } = req.body;
+  const { targetUrl, credentials, depth, features, projectId, mode, customScenario, rawScenario, browsers, enableAiEyes, antiBot } = req.body;
+
+  // Optional Sprint/Release/TestCase context. Absent -> all null, behaviour
+  // identical to today (this route has no auth middleware and none is added).
+  // Present -> we resolve the caller's identity locally (bearer token or the
+  // CI key), the SAME way middleware/auth.ts does, purely to ownership-check
+  // the sprint/release. A run with no trace context never touches this.
+  const sprintCtx = req.body?.sprintId ?? req.body?.sprint_id;
+  const releaseCtx = req.body?.releaseId ?? req.body?.release_id;
+  const testRunCtx = req.body?.testRunId ?? req.body?.test_run_id;
+
+  let traceUserId: string | undefined;
+  if (sprintCtx || releaseCtx || testRunCtx) {
+    const apiKey = req.headers['x-api-key'];
+    if (apiKey && apiKey === process.env.CI_API_KEY) {
+      traceUserId = 'ci-cd-runner';
+    } else {
+      const authHeader = req.headers.authorization;
+      const token = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : undefined;
+      if (!token) {
+        return res.status(401).json({ error: 'Authentication is required to attach sprint/release context to a run.' });
+      }
+      const { data, error } = await supabase.auth.getUser(token);
+      if (error || !data?.user) {
+        return res.status(401).json({ error: 'Invalid authentication token.' });
+      }
+      traceUserId = data.user.id;
+    }
+  }
+
+  let trace;
+  try {
+    trace = await resolveRunTraceability(traceUserId, {
+      sprintId: sprintCtx,
+      testRunId: testRunCtx,
+      releaseId: releaseCtx,
+    });
+  } catch (e: any) {
+    if (e instanceof TraceabilityError) return res.status(e.status).json({ error: e.message });
+    throw e;
+  }
 
   console.log("AUTONOMOUS TARGET:", targetUrl);
 
@@ -67,7 +108,9 @@ router.post('/run', async (req: AuthRequest, res) => {
           testName: `Auto-QA [${browserLower}]`,
           targetUrl,
           description: rawScenario || 'Full autonomous exploration (no custom scenario provided)',
-          ...(releaseId ? { releaseId } : {}),
+          ...(trace.releaseId ? { releaseId: trace.releaseId } : {}),
+          ...(trace.sprintId ? { sprintId: trace.sprintId } : {}),
+          ...(trace.testRunId ? { testRunId: trace.testRunId } : {}),
         })
         .select()
         .single();

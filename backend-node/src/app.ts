@@ -50,6 +50,8 @@ import healingRoutes from './routes/healing';
 import visualRoutes from './routes/visual';
 import ciRoutes from './routes/ci';
 import releasesRoutes from './routes/releases';
+import sprintsRoutes from './routes/sprints';
+import testCasesRoutes from './routes/testCases';
 
 app.use('/api/v1/suites', suitesRoutes);
 app.use('/api/v1/executions', executionRoutes);
@@ -63,6 +65,8 @@ app.use('/api/v1/healing', healingRoutes);
 app.use('/api/v1/visual', visualRoutes);
 app.use('/api/v1/ci', ciRoutes);
 app.use('/api/v1/releases', releasesRoutes);
+app.use('/api/v1/sprints', sprintsRoutes);
+app.use('/api/v1/test-cases', testCasesRoutes);
 
 // Ensure Supabase buckets exist
 ensureBucketsExist().catch(console.error);

@@ -19,6 +19,7 @@ import { normalizeExecutionReport } from '../../../features/report/reportTransfo
 import type { NormalizedReport } from '../../../features/report/reportTransform'
 import { generateReportPdf, generateReportJson } from '../../../features/report/reportExport'
 import { ReportSection } from '../../../features/report/ReportSection'
+import { SprintReleaseChips } from './components/SprintReleaseChips'
 import { useToast } from '../../../contexts/ToastContext'
 import { ExecutionSteps } from './components/ExecutionSteps'
 import type { StepLog } from './components/ExecutionSteps'
@@ -268,6 +269,11 @@ export default function ExecutionReportPage() {
           </p>
           {metadata.targetUrl && (
             <p className="mt-0.5 font-mono text-xs break-all text-muted">{metadata.targetUrl}</p>
+          )}
+          {(execution?.sprintId || execution?.releaseId) && (
+            <p className="mt-1.5">
+              <SprintReleaseChips sprintId={execution?.sprintId} releaseId={execution?.releaseId} />
+            </p>
           )}
         </div>
 

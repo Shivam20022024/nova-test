@@ -7,11 +7,12 @@ import { EmptyState } from '../../../components/ui/EmptyState'
 import { ErrorState } from '../../../components/ui/ErrorState'
 import { PageHeader } from '../../../components/ui/PageHeader'
 import { Skeleton } from '../../../components/ui/Skeleton'
+import { Select } from '../../../components/ui/Select'
 import { StatTile } from '../../../components/ui/StatTile'
 import { DataTable } from '../../../components/tables/DataTable'
 import type { DataTableColumn } from '../../../components/tables/DataTable'
 import { api } from '../../../lib/api'
-import type { ExecutionListItem } from '../../../lib/types'
+import type { ExecutionListItem, Release, Sprint } from '../../../lib/types'
 import { isAllProjects, useData } from '../../../contexts/DataContext'
 import { useToast } from '../../../contexts/ToastContext'
 import { ExecutionStatusBadge } from './components/ExecutionStatusBadge'
@@ -46,8 +47,30 @@ export default function ExecutionListPage() {
     () => api.getExecutions(scopedProjectId),
   )
 
-  const executions = useMemo(() => data ?? [], [data])
-  const hasActive = executions.some((run) => IN_FLIGHT.has(run.status))
+  // Optional client-side traceability filter. Empty selection = today's
+  // dataset, unchanged (the underlying query is never re-scoped).
+  const [releaseFilter, setReleaseFilter] = useState('')
+  const [sprintFilter, setSprintFilter] = useState('')
+  const releases = useSWR<Release[]>(
+    scopedProjectId ? ['releases', scopedProjectId] : null,
+    () => api.listReleases(scopedProjectId),
+  )
+  const sprintOptions = useSWR<Sprint[]>(
+    releaseFilter ? ['release-sprints', releaseFilter] : null,
+    () => api.listReleaseSprints(releaseFilter),
+  )
+
+  const allExecutions = useMemo(() => data ?? [], [data])
+  const executions = useMemo(
+    () =>
+      allExecutions.filter(
+        (run) =>
+          (!releaseFilter || run.releaseId === releaseFilter) &&
+          (!sprintFilter || run.sprintId === sprintFilter),
+      ),
+    [allExecutions, releaseFilter, sprintFilter],
+  )
+  const hasActive = allExecutions.some((run) => IN_FLIGHT.has(run.status))
 
   // Poll only while something is actually running.
   useSWR(hasActive ? ['executions-poll', scope] : null, () => mutate(), {
@@ -238,7 +261,7 @@ export default function ExecutionListPage() {
           </div>
           <Skeleton className="h-80 w-full rounded-md" />
         </div>
-      ) : executions.length === 0 ? (
+      ) : allExecutions.length === 0 ? (
         <EmptyState
           icon={PlayCircle}
           title="No executions yet"
@@ -257,6 +280,51 @@ export default function ExecutionListPage() {
             <StatTile label="Passed" value={counts.passed} />
             <StatTile label="Failed" value={counts.failed} />
           </div>
+
+          {(releases.data?.length ?? 0) > 0 && (
+            <div className="mb-4 flex flex-wrap items-end gap-3">
+              <div className="w-48">
+                <Select
+                  label="Release"
+                  value={releaseFilter}
+                  onChange={(e) => {
+                    setReleaseFilter(e.target.value)
+                    setSprintFilter('')
+                  }}
+                >
+                  <option value="">All releases</option>
+                  {(releases.data ?? []).map((r) => (
+                    <option key={r.id} value={r.id}>{r.name}</option>
+                  ))}
+                </Select>
+              </div>
+              <div className="w-48">
+                <Select
+                  label="Sprint"
+                  value={sprintFilter}
+                  onChange={(e) => setSprintFilter(e.target.value)}
+                  disabled={!releaseFilter}
+                >
+                  <option value="">All sprints</option>
+                  {(sprintOptions.data ?? []).map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </Select>
+              </div>
+              {(releaseFilter || sprintFilter) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReleaseFilter('')
+                    setSprintFilter('')
+                  }}
+                  className="pb-2.5 font-mono text-xs text-accent hover:underline"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          )}
 
           <div className="rounded-md border border-line bg-paper-alt">
             <DataTable columns={columns} rows={executions} getRowKey={(row) => row.id} />

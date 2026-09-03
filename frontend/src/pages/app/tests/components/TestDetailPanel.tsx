@@ -1,6 +1,13 @@
+import { useState } from 'react'
+import { Link } from 'react-router-dom'
+import useSWR from 'swr'
 import { Pencil, Trash2 } from 'lucide-react'
 import { Card } from '../../../../components/ui/Card'
-import type { TestCase } from '../../../../lib/types'
+import { Skeleton } from '../../../../components/ui/Skeleton'
+import { ExecutionStatusBadge } from '../../execution/components/ExecutionStatusBadge'
+import { AssignmentSourceBadge } from '../../releases/statusBadges'
+import { api } from '../../../../lib/api'
+import type { TestCase, TestCaseTraceability } from '../../../../lib/types'
 
 /**
  * Steps are stored as free-form JSON on the backend (`TestRun.steps`) and
@@ -33,6 +40,13 @@ type TestDetailPanelProps = {
 
 export function TestDetailPanel({ test, onEdit, onDelete, deleting }: TestDetailPanelProps) {
   const steps = Array.isArray(test.steps) ? (test.steps as StepLike[]) : []
+  const [tab, setTab] = useState<'definition' | 'history'>('definition')
+
+  // History is loaded lazily the first time the tab is opened.
+  const history = useSWR<TestCaseTraceability>(
+    tab === 'history' ? ['testcase-traceability', test.id] : null,
+    () => api.getTestCaseTraceability(test.id),
+  )
 
   return (
     <Card className="p-5">
@@ -60,10 +74,82 @@ export function TestDetailPanel({ test, onEdit, onDelete, deleting }: TestDetail
           </button>
         </div>
       </div>
-      <h2 className="mt-1 font-sans text-base font-semibold break-words text-ink">{test.name}</h2>
+      <h2 className="mt-1 font-sans text-base font-semibold break-words text-ink">
+        {test.code && <span className="mr-2 font-mono text-xs text-muted">{test.code}</span>}
+        {test.name}
+      </h2>
 
       {test.intent && <p className="mt-2 text-sm text-ink-soft">{test.intent}</p>}
 
+      <div className="mt-4 flex gap-1 border-b border-line">
+        {(['definition', 'history'] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            className={`-mb-px border-b-2 px-3 py-1.5 font-mono text-xs uppercase transition-colors ${
+              tab === t ? 'border-accent text-accent-deep' : 'border-transparent text-muted hover:text-ink'
+            }`}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'history' ? (
+        <div className="mt-4">
+          {history.isLoading ? (
+            <Skeleton className="h-40 w-full" />
+          ) : history.error ? (
+            <p className="text-sm text-fail">Could not load history: {(history.error as Error).message}</p>
+          ) : (
+            <>
+              <p className="font-mono text-xs tracking-wide text-muted uppercase">Assignment history</p>
+              {(history.data?.assignmentHistory.length ?? 0) === 0 ? (
+                <p className="mt-1 text-sm text-muted">Not assigned to any sprint yet.</p>
+              ) : (
+                <ul className="mt-2 flex flex-col gap-1.5">
+                  {history.data?.assignmentHistory.map((a) => (
+                    <li key={a.sprintId} className="flex flex-wrap items-center gap-2 text-sm">
+                      <span className="text-ink">{a.releaseName} / {a.sprintName}</span>
+                      <AssignmentSourceBadge source={a.assignmentSource} />
+                      {a.carriedFrom && (
+                        <span className="font-mono text-xs text-muted">from {a.carriedFrom.sprintName}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <p className="mt-4 font-mono text-xs tracking-wide text-muted uppercase">Execution history</p>
+              {(history.data?.executionHistory.length ?? 0) === 0 ? (
+                <p className="mt-1 text-sm text-muted">No executions linked to this test case.</p>
+              ) : (
+                <ul className="mt-2 flex flex-col gap-1.5">
+                  {history.data?.executionHistory
+                    .slice()
+                    .reverse()
+                    .map((e) => (
+                      <li key={e.executionId} className="flex flex-wrap items-center gap-2 text-sm">
+                        <ExecutionStatusBadge status={e.status} />
+                        <span className="text-ink">
+                          {e.releaseName ? `${e.releaseName} / ${e.sprintName ?? '—'}` : 'No sprint'}
+                        </span>
+                        <span className="font-mono text-xs text-muted">
+                          {e.browser} · {new Date(e.createdAt).toLocaleDateString()}
+                        </span>
+                        <Link to={e.reportPath} className="font-mono text-xs text-accent hover:underline">
+                          Report
+                        </Link>
+                      </li>
+                    ))}
+                </ul>
+              )}
+            </>
+          )}
+        </div>
+      ) : (
+      <>
       <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-4 text-sm">
         <div>
           <dt className="font-mono text-xs text-muted uppercase">Steps</dt>
@@ -102,6 +188,8 @@ export function TestDetailPanel({ test, onEdit, onDelete, deleting }: TestDetail
           </ol>
         )}
       </div>
+      </>
+      )}
     </Card>
   )
 }

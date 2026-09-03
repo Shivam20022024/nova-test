@@ -22,12 +22,21 @@ export type Project = {
  *  Release", "Sprint 14". Purely a label inside NovaTest for grouping and
  *  comparing results later; the name is free text, never validated against
  *  a version format. */
+export type ReleaseStatus = 'PLANNED' | 'ACTIVE' | 'RELEASED' | 'ARCHIVED'
+
 export type Release = {
   id: string
   projectId: string
   name: string
   description: string | null
   createdAt: string
+  /** Traceability additions — nullable for every row created before the
+   *  feature; the API returns `status: 'PLANNED'` rather than null on the
+   *  single-release GET. */
+  status?: ReleaseStatus | null
+  sequence?: number | null
+  startDate?: string | null
+  endDate?: string | null
 }
 
 /** One release's aggregate web + mobile stats, as returned by
@@ -66,6 +75,8 @@ export type TestCase = {
   suiteId: string
   createdAt: string
   updatedAt: string
+  /** Optional display code (e.g. "TC-001"); nullable, no auto-numbering. */
+  code?: string | null
 }
 
 /* ── Executions ───────────────────────────────────────────────────────── */
@@ -150,6 +161,11 @@ export type ExecutionLog = {
   visualRegressionData: string | null
   createdAt: string
   updatedAt: string
+  /** Traceability links — nullable; present only on runs launched with sprint
+   *  context (or via "Run sprint"). `releaseId` predates the sprint feature. */
+  releaseId?: string | null
+  sprintId?: string | null
+  testRunId?: string | null
 }
 
 /** `GET /executions` includes the suite and its project for display. */
@@ -636,4 +652,183 @@ export type MobileBatchJob = {
   failed: Array<{ row: number; error: string }>
   started_at: string | null
   completed_at: string | null
+}
+
+/* ── Traceability: Product → Release → Sprint → Test Case → Execution ──────
+ *
+ * Backing tables added additively (backend-node/migrations/001_traceability_sprints.sql):
+ * Sprint, SprintTestCase, plus nullable ExecutionLog.sprintId/testRunId and
+ * nullable Release.status/sequence/dates. Every shape below is read-only from
+ * the frontend's point of view except the create/patch payloads.
+ */
+
+export type SprintStatus = 'PLANNED' | 'ACTIVE' | 'CLOSED'
+
+export type Sprint = {
+  id: string
+  releaseId: string
+  name: string
+  sequence: number
+  status: SprintStatus
+  startDate: string | null
+  endDate: string | null
+  createdAt: string
+  updatedAt: string
+  /** Present on GET /sprints/:id and /sprints/:id/results. */
+  release?: { id: string; name: string; status: ReleaseStatus; projectId: string }
+}
+
+export type AssignmentSource = 'NEW' | 'CARRIED_FORWARD' | 'MANUAL'
+
+/** One SprintTestCase row, with the embedded TestRun definition. */
+export type SprintAssignment = {
+  id: string
+  sprintId: string
+  testRunId: string
+  assignmentSource: AssignmentSource
+  carriedFromSprintId: string | null
+  addedAt: string
+  addedByUserId: string | null
+  testRun?: Pick<TestCase, 'id' | 'name' | 'code' | 'intent' | 'suiteId'>
+}
+
+export type AggregatedStatus =
+  | 'PASSED'
+  | 'FAILED'
+  | 'PARTIAL'
+  | 'RUNNING'
+  | 'SKIPPED'
+  | 'NOT_RUN'
+
+/** GET /api/v1/sprints/:id/results */
+export type SprintResults = {
+  sprint: Pick<Sprint, 'id' | 'name' | 'status' | 'sequence' | 'startDate' | 'endDate'>
+  release: { id: string; name: string; status: ReleaseStatus; projectId: string }
+  assignedTestCount: number
+  executedTestCount: number
+  passedTestCount: number
+  failedTestCount: number
+  skippedTestCount: number
+  notRunTestCount: number
+  runningTestCount: number
+  partialTestCount: number
+  testCases: Array<{
+    testRunId: string
+    code: string | null
+    name: string | null
+    intent: string | null
+    suiteId: string | null
+    assignmentSource: AssignmentSource
+    carriedFromSprintId: string | null
+    addedAt: string
+    aggregatedStatus: AggregatedStatus
+    lastExecutedAt: string | null
+    executionCount: number
+    latestExecutions: Array<{ browser: string; executionId: string; status: string; createdAt: string }>
+  }>
+}
+
+/** POST /api/v1/sprints/:id/run response */
+export type SprintRunResult = {
+  message: string
+  sprintId: string
+  releaseId: string
+  queued: number
+  executionIds: string[]
+  skipped: Array<{ testRunId: string; reason: string }>
+}
+
+/** GET /api/v1/test-cases/:id/traceability */
+export type TestCaseTraceability = {
+  testCase: {
+    id: string
+    name: string
+    code: string | null
+    intent: string | null
+    suiteId: string
+    suiteName: string | null
+    projectId: string
+  }
+  assignmentHistory: Array<{
+    sprintId: string
+    releaseId: string | null
+    releaseName: string | null
+    sprintName: string | null
+    assignmentSource: AssignmentSource
+    carriedFrom: { releaseId: string; releaseName: string; sprintId: string; sprintName: string } | null
+    addedAt: string
+    addedByUserId: string | null
+  }>
+  executionHistory: Array<{
+    executionId: string
+    status: ExecutionStatus
+    browser: string | null
+    createdAt: string
+    durationMs: number | null
+    releaseId: string | null
+    releaseName: string | null
+    sprintId: string | null
+    sprintName: string | null
+    jiraTicketId: string | null
+    jiraTicketUrl: string | null
+    reportPath: string
+  }>
+}
+
+export type RegressionLocation = {
+  releaseId: string
+  releaseName: string
+  sprintId: string
+  sprintName: string
+  at: string | null
+}
+
+/** GET /api/v1/test-cases/:id/regression */
+export type TestCaseRegression = {
+  testCase: { id: string; name: string; code: string | null; projectId: string }
+  status: 'STABLE' | 'REGRESSED' | 'RECOVERED' | 'INSUFFICIENT_DATA'
+  regressionIntroducedAt: RegressionLocation | null
+  recoveredAt: RegressionLocation | null
+  timeline: Array<{
+    releaseId: string
+    releaseName: string
+    sprintId: string
+    sprintName: string
+    aggregatedStatus: AggregatedStatus
+    at: string | null
+  }>
+}
+
+/** GET /api/v1/projects/:id/traceability */
+export type ProjectTraceability = {
+  project: { id: string; name: string }
+  releaseCount: number
+  releases: Array<{
+    id: string
+    name: string
+    status: ReleaseStatus
+    sequence: number | null
+    startDate: string | null
+    endDate: string | null
+    sprintCount: number
+    totals: { assigned: number; passed: number; failed: number; notRun: number; regressionCount: number; new: number; carried: number }
+    sprints: Array<{
+      id: string
+      name: string
+      status: SprintStatus
+      sequence: number | null
+      startDate: string | null
+      endDate: string | null
+      regressionCount: number
+      assigned: number
+      passed: number
+      failed: number
+      partial: number
+      running: number
+      skipped: number
+      notRun: number
+      new: number
+      carried: number
+    }>
+  }>
 }
