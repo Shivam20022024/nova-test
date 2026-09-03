@@ -247,7 +247,7 @@ class MobileStepResult(Base):
 
     step_index = Column(Integer, nullable=False)
     action = Column(String(50), nullable=False)
-    status = Column(String(20), nullable=False)  # PASSED|FAILED|HEALED|SKIPPED|BLOCKED
+    status = Column(String(20), nullable=False)  # PASSED|FAILED|HEALED|SKIPPED|BLOCKED|FALLBACK_RESOLVED
 
     locator = Column(JSON, nullable=True)
     resolved_locator = Column(JSON, nullable=True)

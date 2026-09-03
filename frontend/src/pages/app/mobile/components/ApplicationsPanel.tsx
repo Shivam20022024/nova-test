@@ -159,8 +159,8 @@ export function ApplicationsPanel({
               return (
                 <li key={app.id}>
                   <div
-                    className={`flex flex-wrap items-center gap-4 py-4 transition-colors duration-150 ${
-                      selected ? 'bg-accent-soft/30' : ''
+                    className={`-mx-4 flex flex-wrap items-center gap-4 rounded-md px-4 py-4 transition-colors duration-150 ${
+                      selected ? 'bg-selected' : ''
                     }`}
                   >
                     <button

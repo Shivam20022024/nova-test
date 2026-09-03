@@ -38,6 +38,9 @@ export function AuthorPanel({ applications, devices, aiEnabled, applicationId, d
   const [objective, setObjective] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [job, setJob] = useState<MobileBatchJob | null>(null)
+  // The plan-review moment: what a just-generated test is actually going to
+  // do, in plain English, before the reviewer jumps to watching it run.
+  const [lastPlan, setLastPlan] = useState<{ lines: string[]; warnings: string[]; suiteId: number | null } | null>(null)
   // Optional: tag this run with a release checkpoint, same as One-Click Test.
   const [releaseId, setReleaseId] = useState('')
   const releases = useSWR<Release[]>(
@@ -93,8 +96,12 @@ export function AuthorPanel({ applications, devices, aiEnabled, applicationId, d
         )
       }
       setObjective('')
-      if (result.suite_id != null) onRun(result.suite_id)
-      else onChanged()
+      // Show the plan before jumping to the live run — the run has already
+      // started server-side (auto-run is unchanged), this only delays when
+      // the reviewer's own view navigates away, so what's about to execute
+      // is legible instead of a black box.
+      setLastPlan({ lines: result.plan_summary, warnings: result.warnings, suiteId: result.suite_id })
+      if (result.suite_id == null) onChanged()
     } catch (error) {
       triggerToast(`Generation failed: ${(error as Error).message}`, true)
     } finally {
@@ -141,6 +148,34 @@ export function AuthorPanel({ applications, devices, aiEnabled, applicationId, d
           Select an application on the <span className="font-medium text-ink">Apps</span> tab first — generated
           tests are grounded in that app's real screens, and ungrounded tests invent elements that do not exist.
         </p>
+      )}
+
+      {lastPlan && (
+        <Card className="p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="font-sans text-base font-semibold text-ink">Generated plan</h2>
+              <p className="mt-1 text-sm text-ink-soft">
+                {lastPlan.suiteId != null
+                  ? 'Already running on the device — here is exactly what it will do.'
+                  : 'Saved as a draft. Pick a device to run it.'}
+              </p>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              {lastPlan.suiteId != null && (
+                <Button onClick={() => onRun(lastPlan.suiteId!)}>View live run</Button>
+              )}
+              <Button variant="outline" onClick={() => setLastPlan(null)}>Dismiss</Button>
+            </div>
+          </div>
+          <ol className="mt-4 space-y-1 text-sm text-ink-soft">
+            {lastPlan.lines.map((line, i) => (
+              <li key={i} className={line.includes('review before running') ? 'text-amber-700' : undefined}>
+                {line}
+              </li>
+            ))}
+          </ol>
+        </Card>
       )}
 
       <Card className="p-6">

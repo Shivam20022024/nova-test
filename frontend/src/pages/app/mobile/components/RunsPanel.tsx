@@ -50,8 +50,8 @@ export function RunsPanel({ executions, loading, activeId, onWatch }: Props) {
             return (
               <li
                 key={execution.id}
-                className={`flex flex-wrap items-center gap-4 py-3 transition-colors duration-150 ${
-                  active ? 'bg-accent-soft/30' : ''
+                className={`-mx-4 flex flex-wrap items-center gap-4 rounded-md px-4 py-3 transition-colors duration-150 ${
+                  active ? 'bg-selected' : ''
                 }`}
               >
                 <span className="w-12 shrink-0 font-mono text-xs text-muted">#{execution.id}</span>

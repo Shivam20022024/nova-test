@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import socket
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
@@ -70,14 +71,53 @@ def _expected_value(step: TestStep) -> Optional[str]:
     return step.expected if step.expected is not None else step.value
 
 
+# Thread-local, not a plain module global: multiple mobile executions run
+# concurrently in their own threads (mobile/suite_engine.py), and a global
+# flag would let one execution's fallback resolution be read by another's
+# step loop. Private to this module — engine.py reads it only through
+# consume_resolved_via_fallback() below.
+_fallback_state = threading.local()
+
+
+def consume_resolved_via_fallback() -> bool:
+    """Read-and-reset: did the most recent _resolve() call on this thread
+    succeed via a step's fallback_locators rather than its primary locator?
+    Called once per step by the execution engine right after the action
+    runs, so a step that only worked because of a fallback can be reported
+    as RESOLVED_VIA_FALLBACK instead of a plain PASSED — visible in the
+    report, without having consumed a full AutoHeal cycle to get there."""
+    used = getattr(_fallback_state, "used", False)
+    _fallback_state.used = False
+    return used
+
+
 def _resolve(driver, step: TestStep, timeout_ms: Optional[int] = None, prefer_clickable: bool = False, want_role: str = "any"):
     _require_locator(step)
+    _fallback_state.used = False
     try:
         return wait_for_element(
             driver, step.locator, timeout_ms=timeout_ms or step.timeout_ms,
             prefer_clickable=prefer_clickable, want_role=want_role,
         )
     except ElementNotFoundError:
+        # The primary locator genuinely isn't there right now — a step's own
+        # fallback_locators (recorded at authoring time from the same Screen
+        # Map element, see schemas.py) get one quick, bounded try each before
+        # surrendering to the same ElementNotFoundError AutoHeal already
+        # handles. Short timeout per fallback: if the primary already waited
+        # out its full timeout_ms, a genuine failure shouldn't cost another
+        # full wait per fallback on top of that.
+        fallback_timeout = min(2000, timeout_ms or step.timeout_ms)
+        for fb in (step.fallback_locators or []):
+            try:
+                element = wait_for_element(
+                    driver, fb, timeout_ms=fallback_timeout,
+                    prefer_clickable=prefer_clickable, want_role=want_role,
+                )
+                _fallback_state.used = True
+                return element
+            except ElementNotFoundError:
+                continue
         raise
 
 

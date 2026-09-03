@@ -155,7 +155,14 @@ export function LiveExecutionPanel({ executionId, onClose }: Props) {
           )}
 
           <div>
-            <h3 className="font-sans text-sm font-semibold text-ink">Steps</h3>
+            <h3 className="font-sans text-sm font-semibold text-ink">
+              Steps
+              {steps.length > 0 && (
+                <span className="ml-2 font-mono text-xs font-normal text-muted">
+                  {steps.filter((s) => s.status === 'PASSED' || s.status === 'HEALED' || s.status === 'FALLBACK_RESOLVED').length}/{steps.length} passed
+                </span>
+              )}
+            </h3>
             {steps.length === 0 ? (
               <p className="mt-2 text-sm text-muted">No steps reported yet.</p>
             ) : (

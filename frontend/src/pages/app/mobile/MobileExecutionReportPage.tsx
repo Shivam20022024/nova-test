@@ -260,7 +260,7 @@ export default function MobileExecutionReportPage() {
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
         <StatTile label="Status" value={statusLabel(execution.status)} />
         <StatTile label="Duration" value={formatDuration(execution.duration_ms)} />
-        <StatTile label="Steps" value={`${steps.filter((s) => s.status === 'PASSED' || s.status === 'HEALED').length}/${steps.length}`} />
+        <StatTile label="Steps" value={`${steps.filter((s) => s.status === 'PASSED' || s.status === 'HEALED' || s.status === 'FALLBACK_RESOLVED').length}/${steps.length}`} />
         <StatTile label="Self-healed" value={healing.length} />
         <StatTile label="Started" value={formatWhen(execution.started_at)} />
       </div>

@@ -17,6 +17,13 @@
   --color-accent-soft: #dbe6ff;
   --color-accent-deep: #17307a;
   --color-accent-ink: #eef2ff;
+  /* Dedicated "this is currently selected" background — accent-soft is
+     built to be a barely-there wash for badges, banners, and decorative
+     gradients, so reusing it (often at 30-40% opacity on top of that) for
+     "is this row/tab/chip selected" reads as almost invisible. This is
+     deliberately more saturated so a selected state is legible at a
+     glance, without being as heavy as the full solid accent. */
+  --color-selected: #b3c9ff;
 
   --color-pass: #178a4c;
   --color-fail: #d43d3d;

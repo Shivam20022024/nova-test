@@ -102,7 +102,7 @@ export function DevicesPanel({
             const result = health[device.id]
             const selected = selectedId === device.id
             return (
-              <li key={device.id} className={`py-4 transition-colors duration-150 ${selected ? 'bg-accent-soft/30' : ''}`}>
+              <li key={device.id} className={`-mx-4 rounded-md px-4 py-4 transition-colors duration-150 ${selected ? 'bg-selected' : ''}`}>
                 <div className="flex flex-wrap items-center gap-4">
                   <button type="button" onClick={() => onSelect(device.id)} aria-pressed={selected} className="min-w-0 flex-1 text-left">
                     <div className="flex items-center gap-2">

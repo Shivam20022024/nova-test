@@ -50,7 +50,7 @@ export function TestFolderTree({
           <div
             key={suite.id}
             className={`group flex items-center gap-1 rounded-md text-sm transition-colors ${
-              suite.id === activeSuiteId ? 'bg-accent-soft' : 'hover:bg-paper'
+              suite.id === activeSuiteId ? 'bg-selected' : 'hover:bg-paper'
             }`}
           >
             <button

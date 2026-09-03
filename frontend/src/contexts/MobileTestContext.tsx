@@ -78,14 +78,14 @@ export function MobileTestProvider({ children }: { children: ReactNode }) {
       setExecutions(runs)
       setTests(testRows)
       setUnavailable(null)
-      setApplicationId((current) => current ?? (apps.length === 1 ? apps[0].id : current))
+      // Deliberately no auto-selection here (of the one app, of the first
+      // available device, ...) — opening a page should never look like
+      // something was already picked on your behalf. Selection only ever
+      // happens from an explicit click, in Apps/DevicesPanel's onSelect.
 
       api.mobile
         .listDevices()
-        .then((rows) => {
-          setDevices(rows)
-          setDeviceId((current) => current ?? rows.find((d) => d.status === 'AVAILABLE')?.id ?? null)
-        })
+        .then((rows) => setDevices(rows))
         .catch(() => setDevices([]))
     } catch (error) {
       // The engine is a separate process; if it is down the rest of the product

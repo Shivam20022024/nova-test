@@ -11,7 +11,7 @@ import shutil
 import threading
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
 from sqlalchemy.orm import Session, selectinload
@@ -547,7 +547,16 @@ def _suite_out(db: Session, suite: MobileTestSuite) -> dict:
         db.commit()
 
     test_rows = []
-    passed = failed = skipped = 0
+    # Mirrors the row-level status→colour mapping in the frontend's
+    # mobileStatus.ts exactly (STATUS_MAP there, and its own comment: "Not
+    # failures. These ran into something outside the test's control, or were
+    # deliberately not run — colouring them red would overstate the damage
+    # and train people to ignore real failures."). BLOCKED/CANCELLED/
+    # REQUIRES_REVIEW/WAITING_APPROVAL are not verdicts — they're a test that
+    # never reached one — so they must not be folded into failed_count, or a
+    # suite stuck on an AutoHeal decision reads as an outright failure it
+    # never actually was.
+    passed = failed = skipped = blocked = 0
     for t in tests:
         e = exec_by_test.get(t.id)
         st = e.status if e else "QUEUED"
@@ -556,8 +565,10 @@ def _suite_out(db: Session, suite: MobileTestSuite) -> dict:
             passed += 1
         elif st == "SKIPPED":
             skipped += 1
-        elif st in ("FAILED", "BLOCKED", "REQUIRES_REVIEW", "INFRA_FAILURE", "CANCELLED"):
+        elif st in ("FAILED", "TIMEOUT", "INFRA_FAILURE"):
             failed += 1
+        elif st in ("BLOCKED", "CANCELLED", "REQUIRES_REVIEW", "WAITING_APPROVAL"):
+            blocked += 1
         result = (e.result_json or {}) if e else {}
         test_rows.append({
             "test_id": t.id, "name": t.name, "execution_id": e.id if e else None,
@@ -577,6 +588,7 @@ def _suite_out(db: Session, suite: MobileTestSuite) -> dict:
         "application_id": suite.application_id, "application_name": application.package_name if application else None,
         "device_id": suite.device_id,
         "test_count": len(tests), "passed_count": passed, "failed_count": failed, "skipped_count": skipped,
+        "blocked_count": blocked,
         "combined_video_url": _artifact_url(suite.combined_video_path),
         "created_at": suite.created_at.isoformat() if suite.created_at else None,
         "completed_at": suite.completed_at.isoformat() if suite.completed_at else None,
@@ -780,6 +792,64 @@ def _ground_from_recent_hierarchy(db: Session, application_id: Optional[int], ma
     return elements or None
 
 
+_PLAN_VERBS = {
+    "LAUNCH": "Launch the app",
+    "TERMINATE": "Close the app",
+    "RESTART": "Restart the app",
+    "BACK": "Go back",
+    "HOME": "Go to the device home screen",
+    "TAP": "Tap {target}",
+    "DOUBLE_TAP": "Double-tap {target}",
+    "LONG_PRESS": "Long-press {target}",
+    "ENTER_TEXT": "Type {value} into {target}",
+    "REPLACE_TEXT": "Replace the text in {target} with {value}",
+    "APPEND_TEXT": "Append {value} to {target}",
+    "CLEAR_TEXT": "Clear {target}",
+    "SCROLL_TO_TEXT": "Scroll until {target} is visible",
+    "SWIPE": "Swipe {value}",
+    "SCROLL": "Scroll {value}",
+    "WAIT": "Wait {value}ms",
+    "WAIT_FOR_ELEMENT": "Wait for {target} to appear",
+    "WAIT_FOR_TEXT": "Wait for {target} to show {value}",
+    "ASSERT_VISIBLE": "Verify {target} is visible",
+    "ASSERT_NOT_VISIBLE": "Verify {target} is not visible",
+    "ASSERT_TEXT": "Verify {target} shows {expected}",
+    "ASSERT_ENABLED": "Verify {target} is enabled",
+    "ASSERT_DISABLED": "Verify {target} is disabled",
+    "ASSERT_SELECTED": "Verify {target} is selected",
+    "ASSERT_CHECKED": "Verify {target} is checked",
+    "ASSERT_ACTIVITY": "Verify the current screen is {expected}",
+    "TAKE_SCREENSHOT": "Take a screenshot",
+    "CAPTURE_HIERARCHY": "Capture the screen's element tree",
+}
+
+
+def _plan_summary_line(index: int, step: Dict[str, Any]) -> str:
+    """One plain-English line for a generated step — the "reviewable plan"
+    a person can scan in a few seconds before a test ever runs, the same
+    spirit as a plan-review step in front of automated execution. Purely
+    templated off fields the step already carries (no extra AI call), so
+    this costs nothing and can never itself introduce a new inaccuracy."""
+    action = (step.get("action") or "").upper()
+    locator = step.get("locator") or {}
+    target = locator.get("hint") or locator.get("value") or "the screen"
+    value = step.get("value")
+    expected = step.get("expected")
+    template = _PLAN_VERBS.get(action, action.replace("_", " ").title() + " {target}")
+    line = template.format(
+        target=f'"{target}"' if target else "the screen",
+        value=f'"{value}"' if value else "",
+        expected=f'"{expected}"' if expected else "",
+    )
+    line = " ".join(line.split())  # collapse if an unused {value}/{expected} left a double space
+    grounded = step.get("grounded")
+    if grounded is False:
+        line += " (⚠ not in the app's Screen Map — review before running)"
+    elif grounded is True:
+        line += " (grounded)"
+    return f"{index}. {line}"
+
+
 @router.post("/tests/generate")
 async def generate_test(
     text: Optional[str] = Form(None),
@@ -822,20 +892,28 @@ async def generate_test(
     # POST /applications/{id}/explore does. The NEXT generation for this app
     # then comes back fully grounded, for free.
     screen_map = _screen_map_for(db, application_id)
-    if screen_map is None and device_id and application_id and not _autorun_possible(device_id):
-        # Only safe to crawl in the background when nothing else is about to
-        # claim this device — when autorun fires below, it reserves `device_id`
-        # itself moments later, and device_manager.reserve_device() rejects a
-        # second concurrent reservation rather than queuing it, so a crawl
-        # racing an autorun would just make the autorun fail with "device
-        # already reserved." When autorun IS about to run, that execution's
-        # own step-by-step hierarchy snapshots feed _ground_from_recent_hierarchy
-        # below for the next generation instead, so grounding still improves
-        # over time without needing a dedicated crawl here.
+    if screen_map is None and device_id and application_id:
+        # The very first generation for a brand-new app/version used to be a
+        # pure guess (fell back to DB-only grounding, or nothing) — exactly
+        # what let an earlier test pick a non-clickable title label as its TAP
+        # target instead of the real product image documented in the Screen
+        # Map. A full crawl (run_exploration's own defaults: up to 14 screens,
+        # 210s) is too slow to run inline in front of a "Generating..."
+        # spinner, but a small, tightly-bounded pass — just enough to map the
+        # entry screen and one hop out — is cheap and turns "ungrounded" into
+        # "grounded" for the single most common case: an objective describing
+        # what's visible right after launch. It reserves and releases the
+        # device itself before returning, so autorun below reserves it fresh
+        # afterward — no race with a background crawl to worry about anymore.
+        # Any failure (device unhealthy, launch error, timeout) is swallowed
+        # and falls through to the same DB-only grounding this always had.
         version = _latest_valid_version(db, application_id)
         if version:
             from mobile.explorer import run_exploration
-            threading.Thread(target=run_exploration, args=(version.id, device_id), daemon=True).start()
+            try:
+                screen_map = run_exploration(version.id, device_id, max_screens=4, time_budget_s=45)
+            except Exception as exc:
+                logger.warning("Quick pre-generation exploration failed (continuing ungrounded): %s", exc)
     grounding = None if screen_map else _ground_from_recent_hierarchy(db, application_id)
 
     from mobile.automatability import classify
@@ -879,6 +957,7 @@ async def generate_test(
     return {
         "steps": result["steps"],
         "warnings": result["warnings"],
+        "plan_summary": [_plan_summary_line(i + 1, s) for i, s in enumerate(result["steps"])],
         "grounded": screen_map is not None or grounding is not None,
         "screen_map_screens": screen_map["screen_count"] if screen_map else 0,
         "grounding_element_count": len(grounding) if grounding else 0,

@@ -433,6 +433,9 @@ export type MobileLocator = {
 export type MobileTestStep = {
   action: string
   locator: MobileLocator | null
+  /** Alternate real identifiers for the same element as `locator`, recorded
+   *  at generation time so a rename resolves silently on the next run. */
+  fallback_locators?: MobileLocator[] | null
   value?: string | null
   timeout_ms?: number
   risk?: 'LOW_RISK' | 'MEDIUM_RISK' | 'HIGH_RISK' | 'CRITICAL'
@@ -464,7 +467,7 @@ export const MOBILE_TERMINAL_STATUSES: readonly MobileExecutionStatus[] = [
 export type MobileStepResult = {
   step_index: number
   action: string
-  status: 'PASSED' | 'FAILED' | 'HEALED' | 'SKIPPED' | 'BLOCKED'
+  status: 'PASSED' | 'FAILED' | 'HEALED' | 'SKIPPED' | 'BLOCKED' | 'FALLBACK_RESOLVED'
   locator: MobileLocator | null
   resolved_locator: MobileLocator | null
   actual: string | null
@@ -520,6 +523,9 @@ export type MobileSuite = {
   passed_count: number
   failed_count: number
   skipped_count: number
+  /** Tests stuck at BLOCKED/CANCELLED/REQUIRES_REVIEW/WAITING_APPROVAL — never
+   *  reached a verdict, so kept out of failed_count (see mobileStatus.ts). */
+  blocked_count: number
   combined_video_url: string | null
   created_at: string | null
   completed_at: string | null
@@ -596,6 +602,7 @@ export type MobileCapabilities = {
 export type MobileGenerateResult = {
   steps: MobileTestStep[]
   warnings: string[]
+  plan_summary: string[]
   grounded: boolean
   screen_map_screens: number
   grounding_element_count: number

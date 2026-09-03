@@ -19,7 +19,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from mobile import device_manager
-from mobile.actions import ActionContext, ActionOutcome, execute_action
+from mobile.actions import ActionContext, ActionOutcome, consume_resolved_via_fallback, execute_action
 from mobile.appium_manager import (
     AppiumServerHandle,
     create_session,
@@ -116,6 +116,7 @@ def execute_test_steps(db, driver, execution, test, ctx, policy, application, ap
 
         _dismiss_system_dialog_if_present(execution_id, driver)
         outcome = _run_single_action(driver, step, ctx)
+        resolved_via_fallback = consume_resolved_via_fallback()
         healed = False
 
         if outcome.status == "PASSED" and original_locator_for_memory is not None and application is not None:
@@ -163,7 +164,17 @@ def execute_test_steps(db, driver, execution, test, ctx, policy, application, ap
             _emit(execution_id, "healing_result", step_index=idx, healing_id=healing_id,
                   healed=healed, status=outcome.status)
 
-        step_row.status = "HEALED" if healed else outcome.status
+        if healed:
+            step_row.status = "HEALED"
+        elif outcome.status == "PASSED" and resolved_via_fallback:
+            # Resolved via one of the step's own fallback_locators, not its
+            # primary one — worth surfacing in the report (the primary
+            # identifier has likely drifted and the source test should
+            # eventually be updated) without having spent a full AutoHeal
+            # cycle to recover from it.
+            step_row.status = "FALLBACK_RESOLVED"
+        else:
+            step_row.status = outcome.status
         step_row.actual = outcome.actual
         step_row.resolved_locator = outcome.resolved_locator
         step_row.completed_at = _now()

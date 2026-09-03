@@ -50,6 +50,13 @@ class Locator(BaseModel):
 class TestStep(BaseModel):
     action: str
     locator: Optional[Locator] = None
+    # Alternate identifiers for the SAME element as `locator`, recorded up
+    # front at authoring time (e.g. from the app's Screen Map) rather than
+    # discovered reactively after a failure. mobile/actions.py's _resolve()
+    # tries these, in order, before ever raising ElementNotFoundError — a
+    # renamed resource-id resolves silently on the next run instead of
+    # needing a full AutoHeal cycle every single time it happens.
+    fallback_locators: Optional[List[Locator]] = None
     value: Optional[str] = None
     timeout_ms: int = 10000
     risk: str = "LOW_RISK"  # LOW_RISK|MEDIUM_RISK|HIGH_RISK|CRITICAL

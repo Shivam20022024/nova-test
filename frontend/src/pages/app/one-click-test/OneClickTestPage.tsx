@@ -410,7 +410,7 @@ export default function OneClickTestPage() {
                   key={feature.key}
                   className={`flex cursor-pointer items-start gap-2.5 rounded-md border p-3 text-sm transition-colors ${
                     features[feature.key]
-                      ? 'border-accent bg-accent-soft/40'
+                      ? 'border-accent bg-selected'
                       : 'border-line hover:bg-paper'
                   }`}
                 >

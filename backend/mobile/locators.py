@@ -452,7 +452,19 @@ def resolve_by_hint(driver, hint: str, want_role: str = "any"):
             continue
         own = " ".join(filter(None, [n.attrs.get("text", ""), n.attrs.get("content-desc", ""), n.attrs.get("resource-id", "")]))
         own_tok = _label_tokens(own)
-        near = nearest_label_text(n)
+        # Nearest-label borrowing exists for ONE pattern (see its own
+        # docstring): an element with no text/content-desc of its own — an
+        # icon, an unlabelled input — reading a nearby caption as if it were
+        # its label. An element that already HAS real text/content-desc
+        # speaks for itself and should never borrow a neighbor's — that's
+        # not filling a gap, it's contaminating a real signal with an
+        # unrelated one. Confirmed live: a long descriptive paragraph with
+        # its own complete sentence outscored the actual "Login" button
+        # purely because a page-title heading ("Login") happened to sit
+        # within the proximity radius — the paragraph never needed to
+        # borrow anything, it already had 140+ characters of its own text.
+        own_has_identity = bool((n.attrs.get("text") or "").strip() or (n.attrs.get("content-desc") or "").strip())
+        near = "" if own_has_identity else nearest_label_text(n)
         near_tok = _label_tokens(near)
         overlap = len(htok & (own_tok | near_tok))
         ratio = max(
@@ -462,6 +474,20 @@ def resolve_by_hint(driver, hint: str, want_role: str = "any"):
         s = overlap * 3 + ratio * 2
         if want_role == "input" and role == "input":
             s += 1.0  # a matching role is itself evidence when the hint is thin
+        if want_role in ("button", "toggle") and role in ("button", "toggle"):
+            # Same principle as the input bonus above, applied to the other
+            # side of a real, generic ambiguity: a screen's own page-title
+            # heading legitimately shares the same word as its submit button
+            # ("Login" heading, "Login" button) and can score identically on
+            # text/token match alone — confirmed live, an exact tie that fell
+            # to whichever happened to sit earlier in the hierarchy (the
+            # heading, not the button). want_role="button" already means
+            # "this step needs to actually DO something," so a candidate
+            # that's genuinely clickable/toggleable is strictly better
+            # evidence than a same-scoring plain text label for that —
+            # without this, a text-role candidate is never even at a
+            # disadvantage in a tie it has no business winning.
+            s += 1.0
         if s > 0:
             scored.append((s, n))
 

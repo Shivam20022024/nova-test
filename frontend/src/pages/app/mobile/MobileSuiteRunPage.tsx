@@ -9,7 +9,7 @@ import { Skeleton } from '../../../components/ui/Skeleton'
 import { StatusBadge } from '../../../components/ui/StatusBadge'
 import { api } from '../../../lib/api'
 import type { MobileSuite } from '../../../lib/types'
-import { formatDuration, statusLabel, toStatus } from './mobileStatus'
+import { formatDuration, statusLabel, suiteBadge, toStatus } from './mobileStatus'
 import { LiveExecutionPanel } from './components/LiveExecutionPanel'
 
 const RUNNING_LIKE = new Set(['QUEUED', 'RUNNING'])
@@ -113,18 +113,16 @@ export default function MobileSuiteRunPage() {
       <Card className="mb-6 p-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <StatusBadge
-              status={suite.status === 'COMPLETED' ? 'pass' : 'running'}
-              label={suite.status === 'COMPLETED' ? 'Completed' : 'Running'}
-            />
+            <StatusBadge {...suiteBadge(suite)} />
             <span className="font-mono text-xs text-muted">
-              {suite.passed_count}/{suite.test_count} passed
+              {suite.passed_count}/{suite.test_count} tests passed
             </span>
           </div>
           <div className="flex h-1.5 w-40 overflow-hidden rounded-full bg-line" role="img"
-            aria-label={`${suite.passed_count} passed, ${suite.failed_count} failed, ${suite.skipped_count} skipped`}>
+            aria-label={`${suite.passed_count} passed, ${suite.failed_count} failed, ${suite.blocked_count} blocked, ${suite.skipped_count} skipped`}>
             <span style={{ width: `${(suite.passed_count / total) * 100}%`, backgroundColor: 'var(--color-pass)' }} />
             <span style={{ width: `${(suite.failed_count / total) * 100}%`, backgroundColor: 'var(--color-fail)' }} />
+            <span style={{ width: `${(suite.blocked_count / total) * 100}%`, backgroundColor: 'var(--color-blocked)' }} />
             <span style={{ width: `${(suite.skipped_count / total) * 100}%`, backgroundColor: 'var(--color-blocked)' }} />
           </div>
         </div>
