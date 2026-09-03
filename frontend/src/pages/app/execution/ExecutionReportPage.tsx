@@ -565,21 +565,47 @@ export default function ExecutionReportPage() {
         </Card>
       </ReportSection>
 
-      {Array.isArray(evidence.screenshots) && evidence.screenshots.length > 0 && (
+      {((Array.isArray(evidence.videos) && evidence.videos.length > 0) ||
+        (Array.isArray(evidence.screenshots) && evidence.screenshots.length > 0)) && (
         <ReportSection title="Evidence">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {evidence.screenshots.map((shot: { id?: string; url: string }, index: number) => (
+          {Array.isArray(evidence.videos) && evidence.videos.length > 0 && (
+            <div className="mb-4">
+              {/* Backend returns videos newest-first; the first row is the
+                  finalized recording (idle LLM-wait time already trimmed). */}
+              <video
+                src={evidence.videos[0].url}
+                controls
+                preload="metadata"
+                className="w-full rounded-md border border-line bg-ink"
+              />
               <a
-                key={shot.id ?? index}
-                href={shot.url}
+                href={evidence.videos[0].url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="overflow-hidden rounded-md border border-line hover:border-accent"
+                className="mt-1 inline-block font-mono text-xs text-muted hover:text-accent"
               >
-                <img src={shot.url} alt={`Evidence ${index + 1}`} className="w-full" />
+                Open recording in new tab
+                {evidence.videos[0].durationFormatted
+                  ? ` · run ${evidence.videos[0].durationFormatted}`
+                  : ''}
               </a>
-            ))}
-          </div>
+            </div>
+          )}
+          {Array.isArray(evidence.screenshots) && evidence.screenshots.length > 0 && (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {evidence.screenshots.map((shot: { id?: string; url: string }, index: number) => (
+                <a
+                  key={shot.id ?? index}
+                  href={shot.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="overflow-hidden rounded-md border border-line hover:border-accent"
+                >
+                  <img src={shot.url} alt={`Evidence ${index + 1}`} className="w-full" />
+                </a>
+              ))}
+            </div>
+          )}
         </ReportSection>
       )}
     </div>

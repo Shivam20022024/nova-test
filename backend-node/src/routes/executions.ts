@@ -11,6 +11,15 @@ const upload = multer({ storage: multer.memoryStorage() });
 const router = Router();
 router.use(authenticate);
 
+// Newest Video row first. Runs before the current worker only ever wrote one
+// row per execution; older executions can carry two (a mislabelled `.mp4` and a
+// correct `.webm`), and the player just takes [0] — so hand back the most
+// recent, which is the good one.
+const videosNewestFirst = (videos: any[] | null | undefined): any[] =>
+  (videos || [])
+    .slice()
+    .sort((a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime());
+
 // GET /api/v1/executions
 router.get('/', async (req: AuthRequest, res) => {
   try {
@@ -113,7 +122,7 @@ router.get('/:id', async (req: AuthRequest, res) => {
     res.json({
       ...execution,
       stepLogs: safeStepLogs,
-      videos: execution.videos || [],
+      videos: videosNewestFirst(execution.videos),
       screenshots: execution.screenshots || [],
       reports: execution.reports || [],
     });
@@ -148,7 +157,7 @@ router.get('/:id/trace', async (req: AuthRequest, res) => {
       status: execution.status,
       traceEvents: Array.isArray(traceData) ? traceData : [],
       screenshots: execution.screenshots || [],
-      videos: execution.videos || []
+      videos: videosNewestFirst(execution.videos)
     });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to fetch trace' });
@@ -532,7 +541,7 @@ router.get('/:id/video', async (req: AuthRequest, res) => {
       return res.status(404).json({ error: 'VIDEO_ARTIFACT_NOT_FOUND' });
     }
 
-    const video = execution.videos[0];
+    const video = videosNewestFirst(execution.videos)[0];
     if (!video) {
       console.log(`VIDEO_ARTIFACT_NOT_FOUND for execution ${id}`);
       return res.status(404).json({ error: 'VIDEO_ARTIFACT_NOT_FOUND' });

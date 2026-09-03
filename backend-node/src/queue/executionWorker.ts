@@ -1,10 +1,11 @@
+import os from 'os';
 import { Worker, Queue, Job, FlowProducer } from 'bullmq';
 import redisConnection from '../lib/redis';
 import { chromium, firefox, webkit } from 'playwright';
 import fs from 'fs/promises';
 import * as fsSync from 'fs';
 import { supabase } from '../utils/storage';
-import { resolveFfmpegPath } from '../lib/ffmpeg';
+import { finalizeExecutionVideo } from '../lib/videoFinalize';
 import { applyHealedSelectorToTestRun } from '../utils/healingPersistence';
 
 import { RequirementsAgent } from '../agents/RequirementsAgent';
@@ -25,7 +26,19 @@ import { JiraService } from '../services/JiraService';
 // with jobs on the production 'test-executions' queue (both potentially
 // sharing the same Redis instance) — see commit "Isolate local test
 // execution queue".
-export const executionQueueName = process.env.NODE_ENV === 'production' ? 'test-executions' : 'test-executions-local';
+//
+// Dev queues are ALSO namespaced per machine: several developers share one
+// Upstash Redis (see REDIS_URL in .env), and a bare 'test-executions-local'
+// lets any dev's worker dequeue another dev's job — the job then runs on a
+// machine with a different browser/env and its failure lands in the shared
+// Supabase row. QUEUE_NAMESPACE pins a stable name; otherwise the hostname
+// keeps each machine on its own queue. Producer (executionQueue) and consumer
+// (Worker) both derive from this constant, so they always stay in sync.
+const localQueueSuffix = (process.env.QUEUE_NAMESPACE || os.hostname() || 'local')
+  .replace(/[^A-Za-z0-9_-]/g, '-');
+export const executionQueueName = process.env.NODE_ENV === 'production'
+  ? 'test-executions'
+  : `test-executions-local-${localQueueSuffix}`;
 
 async function cleanupInterruptedJobs() {
   try {
@@ -114,6 +127,13 @@ export const initExecutionWorker = (io: any) => {
       let sharedContext: any = null;
       let sharedPage: any = null;
       let aggregatedExecResult: any = { success: true, scenario_status: {} };
+
+      // Video is finalized once — by the success path if the run got that far,
+      // otherwise by the finally cleanup. This guard stops the two paths from
+      // each uploading a copy and writing a second (differently-encoded) Video
+      // row. videoLocalPath keeps the finalized file on disk for Jira attach.
+      let videoFinalized = false;
+      let videoLocalPath = '';
 
       // Live browser view: a continuous screencast of the shared page for the
       // whole run (discovery -> generation -> execution), streamed to the UI via
@@ -813,45 +833,22 @@ export const initExecutionWorker = (io: any) => {
 
         if (video) {
           try {
-            const videoPath = await video.path();
-            if (fsSync.existsSync(videoPath)) {
-              const stats = fsSync.statSync(videoPath);
-              if (stats.size > 0) {
-                // Post-process with FFmpeg to remove static LLM processing frames
-                const compressedPath = videoPath.replace('.webm', '_compressed.webm');
-                try {
-                  const { exec } = require('child_process');
-                  const util = require('util');
-                  const execPromise = util.promisify(exec);
-                  const ffmpegBin = resolveFfmpegPath();
-                  await execPromise(`"${ffmpegBin}" -y -i "${videoPath}" -vf "mpdecimate,setpts=N/FRAME_RATE/TB" "${compressedPath}"`);
-                  if (fsSync.existsSync(compressedPath) && fsSync.statSync(compressedPath).size > 0) {
-                     fsSync.copyFileSync(compressedPath, videoPath);
-                  } else {
-                     console.error("FFmpeg ran but produced no compressed output, keeping original video.");
-                  }
-                } catch (ffmpegErr) {
-                  console.error("FFmpeg compression failed, falling back to original video:", ffmpegErr);
-                }
-
-                const videoData = await fs.readFile(videoPath);
-                const { data, error } = await supabase.storage
-                  .from('videos')
-                  .upload(`${executionId}.mp4`, videoData, { contentType: 'video/mp4', upsert: true });
-                  
-                if (!error && data) {
-                  const { data: publicData } = supabase.storage.from('videos').getPublicUrl(data.path);
-                  finalVideoUrl = publicData.publicUrl;
-                }
-              }
+            const rawPath = await video.path();
+            const finalized = await finalizeExecutionVideo(rawPath, executionId, logMsg);
+            if (finalized) {
+              finalVideoUrl = finalized.url;
+              videoLocalPath = finalized.localPath;
+              videoFinalized = true;
             }
           } catch (e) {
             console.error("Video processing failed in worker", e);
           }
         }
 
-        // Save artifacts to DB
-        if (finalVideoUrl) {
+        // Save artifacts to DB. finalizeExecutionVideo already wrote the Video
+        // row when it ran; only fall back to a direct insert if a URL came from
+        // the executor itself (batch modes) and nothing was persisted.
+        if (finalVideoUrl && !videoFinalized) {
           await supabase.from('Video').insert({ executionLogId: executionId, url: finalVideoUrl, storagePath: `videos/${executionId}.webm` });
         }
         if (execResult.screenshotUrl) {
@@ -1276,8 +1273,7 @@ export const initExecutionWorker = (io: any) => {
       } finally {
         // Lock remains in Redis for 5 minutes to prevent ghost retries
         logMsg('[Telemetry] VIDEO_FLUSH_STARTED');
-        let videoPath = '';
-        if (sharedPage) {
+        if (sharedPage && !videoFinalized) {
           try {
             const video = sharedPage.video();
 
@@ -1298,77 +1294,22 @@ export const initExecutionWorker = (io: any) => {
                await sharedBrowser.close().catch(() => {});
                logMsg('[Telemetry] BROWSER_INSTANCE_CLOSED');
             }
-            
+
             logMsg('[Telemetry] VIDEO_RECORDING_STOPPED');
             if (job.data.mode === 'EXCEL') logMsg('[Telemetry] EXCEL_VIDEO_RECORDING_STOPPED');
-            
-            if (video) {
-              videoPath = await video.path().catch(() => '');
-              if (videoPath) logMsg('[Video] VIDEO_PATH_RESOLVED');
-            }
-            
-            if (videoPath && fsSync.existsSync(videoPath)) {
-              let isReadable = false;
-              try {
-                fsSync.accessSync(videoPath, fsSync.constants.R_OK);
-                isReadable = true;
-              } catch(e) {}
-              
-              const stats = fsSync.statSync(videoPath);
-              if (stats.size > 5120 && isReadable) { // Require > 5KB to prevent corrupt ghosts
-                logMsg('[Telemetry] VIDEO_FILE_SIZE_VALIDATED');
-                logMsg('[Video] VIDEO_SAVED locally. Uploading...');
-                
-                // Post-process with FFmpeg to remove static LLM processing frames
-                const compressedPath = videoPath.replace('.webm', '_compressed.webm');
-                try {
-                  const { exec } = require('child_process');
-                  const util = require('util');
-                  const execPromise = util.promisify(exec);
-                  const ffmpegBin = resolveFfmpegPath();
-                  logMsg(`[Video] Compressing video to remove static LLM wait times (using ${ffmpegBin})...`);
-                  const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('FFmpeg timeout')), 30000));
-                  await Promise.race([
-                    execPromise(`"${ffmpegBin}" -y -i "${videoPath}" -vf "mpdecimate,setpts=N/FRAME_RATE/TB" "${compressedPath}"`),
-                    timeoutPromise
-                  ]);
-                  if (fsSync.existsSync(compressedPath) && fsSync.statSync(compressedPath).size > 0) {
-                     fsSync.copyFileSync(compressedPath, videoPath);
-                     logMsg('[Video] Compression successful');
-                  } else {
-                     logMsg('[Video] FFmpeg ran but produced no compressed output, keeping original video.');
-                  }
-                } catch (ffmpegErr: any) {
-                  logMsg(`[Video] FFmpeg compression failed, falling back to original video: ${ffmpegErr?.message || ffmpegErr}`);
-                }
 
-                const videoData = await fs.readFile(videoPath);
-                const { data, error } = await supabase.storage
-                  .from('videos')
-                  .upload(`${executionId}.webm`, videoData, { contentType: 'video/webm', upsert: true });
-                
-                if (!error && data) {
-                  const { data: publicData } = supabase.storage.from('videos').getPublicUrl(data.path);
-                  if (publicData && publicData.publicUrl) {
-                      await supabase.from('Video').insert({ executionLogId: executionId, url: publicData.publicUrl, storagePath: `videos/${executionId}.webm` });
-                      logMsg('[Telemetry] VIDEO_UPLOAD_VERIFIED');
-                      logMsg('[Telemetry] VIDEO_ARTIFACT_PERSISTED');
-                      if (job.data.mode === 'EXCEL') logMsg('[Telemetry] EXCEL_VIDEO_ARTIFACT_PERSISTED');
-                  } else {
-                      logMsg(`[Video] ERROR VIDEO_CORRUPT: URL missing`);
-                      throw new Error('VIDEO_ARTIFACT_INVALID: publicUrl not returned');
-                  }
-                } else {
-                  logMsg(`[Video] ERROR VIDEO_CORRUPT: Upload failed ${error?.message}`);
-                  throw new Error('VIDEO_ARTIFACT_INVALID: upload failed');
-                }
-              } else {
-                logMsg(`[Video] ERROR VIDEO_CORRUPT: file empty or unreadable (size=${stats.size})`);
-                throw new Error('VIDEO_ARTIFACT_INVALID: size too small');
-              }
+            const rawPath = video ? await video.path().catch(() => '') : '';
+            if (rawPath) logMsg('[Video] VIDEO_PATH_RESOLVED');
+
+            const finalized = rawPath ? await finalizeExecutionVideo(rawPath, executionId, logMsg) : null;
+            if (finalized) {
+              videoLocalPath = finalized.localPath;
+              videoFinalized = true;
+              logMsg('[Telemetry] VIDEO_UPLOAD_VERIFIED');
+              logMsg('[Telemetry] VIDEO_ARTIFACT_PERSISTED');
+              if (job.data.mode === 'EXCEL') logMsg('[Telemetry] EXCEL_VIDEO_ARTIFACT_PERSISTED');
             } else {
-              logMsg('[Video] ERROR VIDEO_CORRUPT: no file');
-              throw new Error('VIDEO_ARTIFACT_INVALID: no file generated');
+              logMsg('[Video] ERROR VIDEO_CORRUPT: no artefact persisted');
             }
           } catch (e: any) {
             console.error("Video processing failed during error recovery", e);
@@ -1460,7 +1401,7 @@ ${errorMsg}
                      };
                      
                      // 1. Video
-                     if (videoPath) await attachLocalFile(videoPath, 'execution.mp4');
+                     if (videoLocalPath) await attachLocalFile(videoLocalPath, videoLocalPath.toLowerCase().endsWith('.mp4') ? 'execution.mp4' : 'execution.webm');
                      
                      // 2. Screenshot
                      const screenshotPath = (await import('path')).resolve(process.cwd(), 'temp', 'screenshots', `${executionId}.png`);

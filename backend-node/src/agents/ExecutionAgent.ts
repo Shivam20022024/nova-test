@@ -806,6 +806,11 @@ export class ExecutionAgent {
                       successAction = true;
                       if (action.scenarioName) scenario_status[action.scenarioName] = 'PASS';
                       emitLog('telemetry', `ACTION_COMPLETED=${action.action}`);
+                      // Record the recovery as a heal so the report's self-heal
+                      // count and the HealingEvent ledger both see it (the worker
+                      // derives both from HEAL TRIGGERED -> HEAL PASSED step pairs).
+                      addStep('HEAL', 'TRIGGERED', 0, `Failed selector: ${rawSelector}`, undefined, rawSelector);
+                      addStep('HEAL', 'PASSED', Date.now() - startTime, `Recovered role-agnostic selector: ${relaxed}`, undefined, relaxed);
                       addStep(action.action, 'PASSED', Date.now() - startTime, `${details} (recovered: role-agnostic ${relaxed})`, action.value, relaxed);
                       logTranscriptEvent(action.action, relaxed, action.value, 'SUCCESS', action.scenarioName);
                       break;
@@ -844,6 +849,9 @@ export class ExecutionAgent {
                       successAction = true;
                       if (action.scenarioName) scenario_status[action.scenarioName] = 'PASS';
                       emitLog('telemetry', `ACTION_COMPLETED=${action.action}`);
+                      // Record the recovery as a heal (see role-relax path above).
+                      addStep('HEAL', 'TRIGGERED', 0, `Failed selector: ${rawSelector}`, undefined, rawSelector);
+                      addStep('HEAL', 'PASSED', Date.now() - startTime, `Recovered via selector regeneration: ${regen}`, undefined, regen);
                       addStep(action.action, 'PASSED', Date.now() - startTime, `${details} (recovered via selector regeneration: ${regen})`, action.value, regen);
                       logTranscriptEvent(action.action, regen, action.value, 'SUCCESS', action.scenarioName);
                       break;
@@ -914,6 +922,61 @@ export class ExecutionAgent {
                 break;
             }
             emitLog('healing', `Healing Decision: ELIGIBLE`);
+
+            // A click/fill whose selector IS present in the DOM but landed on a
+            // non-interactive element - the classic case is an ambiguous
+            // getByText(/X/i) whose .first() match is a heading or a hidden
+            // modal title (e.g. demoblaze's "Place order" <h5> inside
+            // #orderModal) instead of the real <button>. Re-point at the actual
+            // control before giving up:
+            //   1. deterministic: getByRole('button'|'link', { name: /X/i })
+            //   2. one LLM regenerateSelector against the live DOM
+            // Emits HEAL steps so the recovery is counted and persisted.
+            if (err.message.includes("InvalidActionTargetError")
+                && (action.action === 'click' || action.action === 'fill')
+                && !action._targetRelaxTried) {
+              action._targetRelaxTried = true;
+              const healStart = Date.now();
+              const originalSelector = action.selector;
+              const textMatch = String(action.selector || '').match(/getByText\s*\(\s*\/([^/]+)\/[a-z]*/i)
+                 || String(action.selector || '').match(/getByText\s*\(\s*['"]([^'"]+)['"]/i)
+                 || String(action.selector || '').match(/text\s*=\s*["']?([^"'\]]+)/i);
+              const candidates: string[] = [];
+              if (textMatch && textMatch[1]) {
+                const nm = textMatch[1].trim().replace(/\//g, '\\/');
+                candidates.push(`getByRole('button', { name: /${nm}/i })`);
+                candidates.push(`getByRole('link', { name: /${nm}/i })`);
+              }
+              let recovered = '';
+              for (const cand of candidates) {
+                try {
+                  const cloc = getPlaywrightLocator(page, cand);
+                  await cloc.waitFor({ state: 'visible', timeout: 3000 });
+                  if (await cloc.isEnabled()) { recovered = cand; break; }
+                } catch { /* try next candidate */ }
+              }
+              if (!recovered && action.assertion && action.assertion !== 'null') {
+                try {
+                  const compactDom = JSON.stringify(await extractCompactDom(page), null, 2);
+                  const regen = await new ScriptGenerationAgent(executionId)
+                    .regenerateSelector(action.assertion, action.action, compactDom);
+                  const liveDom = await page.evaluate(() => document.body.innerHTML);
+                  if (regen && regen !== 'null' && regen.trim() !== '' && validateSelectorDOM(regen, liveDom).valid) {
+                    recovered = regen;
+                  }
+                } catch (regenErr: any) {
+                  emitLog('agent_log', `[TARGET_RELAX] regeneration failed: ${regenErr.message}`);
+                }
+              }
+              if (recovered) {
+                emitLog('healing', `[TARGET_RELAX] ${originalSelector} -> ${recovered}`);
+                addStep('HEAL', 'TRIGGERED', 0, `Failed selector: ${originalSelector}`, undefined, originalSelector);
+                addStep('HEAL', 'PASSED', Date.now() - healStart, `Re-pointed to interactive element: ${recovered}`, undefined, recovered);
+                action.selector = recovered;
+                continue; // retry the action with the interactive selector
+              }
+            }
+
             if (err.message.includes("InvalidActionTargetError") || err.message.includes("WrongPageError") || err.message.includes("BlockedByAntiBotError") || err.message.includes("SELECTOR_RESOLUTION_FAILED") || err.message.includes("LOGIN_ASSERTION_FAILED") || err.message.includes("FILL_VERIFICATION_FAILED") || err.message.includes("EMPTY_FILL_VALUE") || err.message.includes("INVALID_ACTION_TARGET") || err.message.includes("Assertion failed")) {
 
                  if (err.message.includes("Assertion failed") || err.message.includes("ASSERTION_FAILED")) {
