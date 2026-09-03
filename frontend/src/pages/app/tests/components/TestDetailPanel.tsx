@@ -1,13 +1,37 @@
-import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useMemo, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import useSWR from 'swr'
-import { Pencil, Trash2 } from 'lucide-react'
+import { Pencil, Play, Trash2 } from 'lucide-react'
+import { Button } from '../../../../components/ui/Button'
 import { Card } from '../../../../components/ui/Card'
+import { Modal } from '../../../../components/ui/Modal'
+import { Select } from '../../../../components/ui/Select'
 import { Skeleton } from '../../../../components/ui/Skeleton'
 import { ExecutionStatusBadge } from '../../execution/components/ExecutionStatusBadge'
 import { AssignmentSourceBadge } from '../../releases/statusBadges'
+import { useToast } from '../../../../contexts/ToastContext'
 import { api } from '../../../../lib/api'
 import type { TestCase, TestCaseTraceability } from '../../../../lib/types'
+
+const BROWSERS = ['chromium', 'firefox', 'webkit', 'edge'] as const
+
+/** Local check mirroring the backend's — a runnable web test case needs at
+ *  least one step and a goto step with an http(s) URL. */
+function runBlockReason(steps: unknown[]): string | null {
+  if (!Array.isArray(steps) || steps.length === 0) return 'This test case has no steps.'
+  const goto = steps.find(
+    (s) =>
+      s != null &&
+      typeof s === 'object' &&
+      (s as Record<string, unknown>).action === 'goto' &&
+      typeof (s as Record<string, unknown>).url === 'string' &&
+      ((s as Record<string, unknown>).url as string).trim(),
+  )
+  if (!goto) return 'This test case has no starting URL — add a "goto" step.'
+  const url = ((goto as Record<string, unknown>).url as string).trim()
+  if (!/^https?:\/\//i.test(url)) return `The starting URL "${url}" must begin with http:// or https://.`
+  return null
+}
 
 /**
  * Steps are stored as free-form JSON on the backend (`TestRun.steps`) and
@@ -39,14 +63,35 @@ type TestDetailPanelProps = {
 }
 
 export function TestDetailPanel({ test, onEdit, onDelete, deleting }: TestDetailPanelProps) {
+  const navigate = useNavigate()
+  const { triggerToast } = useToast()
   const steps = Array.isArray(test.steps) ? (test.steps as StepLike[]) : []
   const [tab, setTab] = useState<'definition' | 'history'>('definition')
+  const [runOpen, setRunOpen] = useState(false)
+  const [browser, setBrowser] = useState<string>('chromium')
+  const [running, setRunning] = useState(false)
+
+  const blockReason = useMemo(() => runBlockReason(test.steps), [test.steps])
 
   // History is loaded lazily the first time the tab is opened.
   const history = useSWR<TestCaseTraceability>(
     tab === 'history' ? ['testcase-traceability', test.id] : null,
     () => api.getTestCaseTraceability(test.id),
   )
+
+  async function runTest() {
+    setRunning(true)
+    try {
+      const res = await api.runTestCase(test.id, { browser })
+      triggerToast(`Queued run of "${res.testName}".`)
+      setRunOpen(false)
+      navigate(`/app/execution/${res.executionId}`)
+    } catch (err) {
+      triggerToast(`Could not start run: ${(err as Error).message}`, true)
+    } finally {
+      setRunning(false)
+    }
+  }
 
   return (
     <Card className="p-5">
@@ -80,6 +125,22 @@ export function TestDetailPanel({ test, onEdit, onDelete, deleting }: TestDetail
       </h2>
 
       {test.intent && <p className="mt-2 text-sm text-ink-soft">{test.intent}</p>}
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button
+          marker={false}
+          className="px-3 py-1.5 text-xs"
+          disabled={blockReason != null}
+          title={blockReason ?? undefined}
+          onClick={() => setRunOpen(true)}
+        >
+          <Play size={13} aria-hidden="true" /> Run Test
+        </Button>
+        <Button variant="outline" marker={false} className="px-3 py-1.5 text-xs" onClick={onEdit}>
+          <Pencil size={13} aria-hidden="true" /> Edit
+        </Button>
+      </div>
+      {blockReason && <p className="mt-1.5 text-xs text-muted">{blockReason}</p>}
 
       <div className="mt-4 flex gap-1 border-b border-line">
         {(['definition', 'history'] as const).map((t) => (
@@ -190,6 +251,33 @@ export function TestDetailPanel({ test, onEdit, onDelete, deleting }: TestDetail
       </div>
       </>
       )}
+
+      <Modal open={runOpen} onClose={() => setRunOpen(false)} title="Run Test">
+        <div className="flex flex-col gap-3">
+          <div className="rounded-md border border-line bg-paper p-3 text-sm">
+            <p className="font-medium text-ink">{test.name}</p>
+            {test.intent && <p className="mt-0.5 text-xs text-ink-soft">{test.intent}</p>}
+          </div>
+          <Select label="Browser" value={browser} onChange={(e) => setBrowser(e.target.value)}>
+            {BROWSERS.map((b) => (
+              <option key={b} value={b}>
+                {b === 'webkit' ? 'Safari (WebKit)' : b.charAt(0).toUpperCase() + b.slice(1)}
+              </option>
+            ))}
+          </Select>
+          <p className="text-xs text-muted">
+            Runs this test case on its own — no sprint or release is created or changed. A new execution is recorded in history.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" marker={false} onClick={() => setRunOpen(false)}>
+              Cancel
+            </Button>
+            <Button marker={false} disabled={running || blockReason != null} onClick={() => void runTest()}>
+              {running ? 'Starting…' : 'Run Test'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </Card>
   )
 }

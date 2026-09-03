@@ -26,6 +26,7 @@ export type NavIconKey =
   | 'compatibility'
   | 'healing'
   | 'reports'
+  | 'traceability'
   | 'release-readiness'
   | 'release-comparison'
   | 'integrations'
@@ -75,6 +76,7 @@ export const navGroups: NavGroup[] = [
     label: 'Intelligence',
     items: [
       { label: 'AutoHeal', href: '/app/healing', icon: 'healing' },
+      { label: 'Traceability', href: '/app/traceability', icon: 'traceability' },
       { label: 'Reports', href: '/app/reports', icon: 'reports' },
       { label: 'Release Readiness', href: '/app/reports/release-readiness', icon: 'release-readiness' },
       { label: 'Compare Releases', href: '/app/reports/release-comparison', icon: 'release-comparison' },

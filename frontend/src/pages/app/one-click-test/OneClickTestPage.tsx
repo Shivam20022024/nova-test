@@ -1,5 +1,4 @@
 import { useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import useSWR from 'swr'
 import { FileUp, FolderKanban, Play, X } from 'lucide-react'
 import { Button } from '../../../components/ui/Button'
@@ -16,15 +15,19 @@ import type { ExcelTestCase, Release } from '../../../lib/types'
 import { isAllProjects, useData } from '../../../contexts/DataContext'
 import { useToast } from '../../../contexts/ToastContext'
 import { parseScenarioText } from './scenarioParser'
+import { RunStartedCard } from './RunStartedCard'
 
 const DEFAULT_FEATURES: Record<string, boolean> = Object.fromEntries(
   AUTONOMOUS_FEATURES.map((feature) => [feature.key, true]),
 )
 
 export default function OneClickTestPage() {
-  const navigate = useNavigate()
   const { activeProject, activeSuite } = useData()
   const { triggerToast } = useToast()
+
+  // The execution just started from this page — its status + step results are
+  // shown inline (RunStartedCard), with a link to the full execution page.
+  const [startedRun, setStartedRun] = useState<{ id: string; extra: number } | null>(null)
 
   const [targetUrl, setTargetUrl] = useState('')
   const [scenarioText, setScenarioText] = useState('')
@@ -117,7 +120,9 @@ export default function OneClickTestPage() {
           sprint_id: sprintId || null,
         })
         triggerToast(`Queued ${result.executionIds.length} runs from the Excel batch.`)
-        if (result.executionIds[0]) navigate(`/app/execution/${result.executionIds[0]}`)
+        if (result.executionIds[0]) {
+          setStartedRun({ id: result.executionIds[0], extra: Math.max(0, result.executionIds.length - 1) })
+        }
         return
       }
 
@@ -141,7 +146,9 @@ export default function OneClickTestPage() {
         sprintId: sprintId || null,
       })
       triggerToast('Autonomous run queued.')
-      if (result.executionIds[0]) navigate(`/app/execution/${result.executionIds[0]}`)
+      if (result.executionIds[0]) {
+        setStartedRun({ id: result.executionIds[0], extra: Math.max(0, result.executionIds.length - 1) })
+      }
     } catch (error) {
       triggerToast(`Could not start the run: ${(error as Error).message}`, true)
     } finally {
@@ -462,10 +469,28 @@ export default function OneClickTestPage() {
               ? 'Queueing…'
               : isExcelMode
                 ? `Run ${selectedCaseIds.size} imported case${selectedCaseIds.size === 1 ? '' : 's'}`
-                : 'Run test'}
+                : startedRun
+                  ? 'Run again'
+                  : 'Run test'}
           </Button>
         </div>
       </Card>
+
+      {startedRun && (
+        <RunStartedCard
+          key={startedRun.id}
+          executionId={startedRun.id}
+          extraCount={startedRun.extra}
+          fallback={{
+            testName: isExcelMode
+              ? 'Excel Batch Execution'
+              : scenarioText.trim().split('\n')[0]?.slice(0, 80) || 'Autonomous run',
+            browser: browsers[0],
+            targetUrl: isExcelMode ? excelUrl.trim() : targetUrl.trim(),
+          }}
+          onDismiss={() => setStartedRun(null)}
+        />
+      )}
     </div>
   )
 }

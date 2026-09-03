@@ -567,9 +567,17 @@ export class ExecutionAgent {
                 
                 // SPA Navigation Fix
                 await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
-                
+
+                // Menu / drawer opener: give the slide-in animation time to finish
+                // and its items become hittable before the next step runs. Keyed
+                // off the step's own wording so it never fires for a normal click.
+                if (/burger|hamburger|open\s*menu|side\s*menu|sidebar|nav(?:igation)?\s*(?:menu|toggle|drawer)|drawer|dropdown/i
+                    .test(`${action.assertion || ''} ${rawSelector || ''}`)) {
+                  await page.waitForTimeout(800);
+                }
+
                 // Removed hardcoded login assertions to allow negative test cases to proceed normally and be verified by their own explicit assertions.
-                
+
                 emitLog('telemetry', 'CLICK_VERIFIED');
                 break;
               }
@@ -923,36 +931,46 @@ export class ExecutionAgent {
             }
             emitLog('healing', `Healing Decision: ELIGIBLE`);
 
-            // A click/fill whose selector IS present in the DOM but landed on a
-            // non-interactive element - the classic case is an ambiguous
-            // getByText(/X/i) whose .first() match is a heading or a hidden
-            // modal title (e.g. demoblaze's "Place order" <h5> inside
-            // #orderModal) instead of the real <button>. Re-point at the actual
-            // control before giving up:
-            //   1. deterministic: getByRole('button'|'link', { name: /X/i })
-            //   2. one LLM regenerateSelector against the live DOM
-            // Emits HEAL steps so the recovery is counted and persisted.
-            if (err.message.includes("InvalidActionTargetError")
-                && (action.action === 'click' || action.action === 'fill')
-                && !action._targetRelaxTried) {
+            // A click/fill whose role/text-scoped selector did not resolve to a
+            // usable control:
+            //   - it landed on a non-interactive element (InvalidActionTargetError)
+            //     — e.g. an ambiguous getByText(/X/i).first() hitting a heading
+            //       or a hidden modal title (demoblaze's "Place order" <h5>), OR
+            //   - it matched nothing at all — an <a> with no href has no 'link'
+            //     role (saucedemo's #logout_sidebar_link), an icon link has no
+            //     accessible name, a <span> title is not a heading.
+            // Derive the intended NAME from the selector (getByText OR
+            // getByRole({name})) and probe the other common shapes before
+            // falling through to full healing. Emits HEAL steps.
+            const _relaxable = (action.action === 'click' || action.action === 'fill') && !action._targetRelaxTried;
+            const _nameMatch = String(action.selector || '').match(/getByText\s*\(\s*\/([^/]+)\/[a-z]*/i)
+               || String(action.selector || '').match(/getByText\s*\(\s*['"]([^'"]+)['"]/i)
+               || String(action.selector || '').match(/name\s*:\s*\/([^/]+)\/[a-z]*/i)
+               || String(action.selector || '').match(/name\s*:\s*['"]([^'"]+)['"]/i)
+               || String(action.selector || '').match(/text\s*=\s*["']?([^"'\]]+)/i);
+            const _notResolved = err.message.includes("InvalidActionTargetError")
+               || err.message.includes("not present in current DOM")
+               || err.message.includes("Selector not found in DOM")
+               || err.message.includes("Selector resolution failed")
+               || err.message.includes("waiting for") // playwright visibility/attached timeout
+               || err.message.includes("strict mode violation");
+            if (_relaxable && _notResolved && _nameMatch && _nameMatch[1]) {
               action._targetRelaxTried = true;
               const healStart = Date.now();
               const originalSelector = action.selector;
-              const textMatch = String(action.selector || '').match(/getByText\s*\(\s*\/([^/]+)\/[a-z]*/i)
-                 || String(action.selector || '').match(/getByText\s*\(\s*['"]([^'"]+)['"]/i)
-                 || String(action.selector || '').match(/text\s*=\s*["']?([^"'\]]+)/i);
-              const candidates: string[] = [];
-              if (textMatch && textMatch[1]) {
-                const nm = textMatch[1].trim().replace(/\//g, '\\/');
-                candidates.push(`getByRole('button', { name: /${nm}/i })`);
-                candidates.push(`getByRole('link', { name: /${nm}/i })`);
-              }
+              const nm = _nameMatch[1].trim().replace(/\//g, '\\/');
+              const candidates: string[] = [
+                `getByText(/${nm}/i)`,
+                `getByRole('button', { name: /${nm}/i })`,
+                `getByRole('link', { name: /${nm}/i })`,
+                `getByRole('menuitem', { name: /${nm}/i })`,
+              ].filter((c) => c !== originalSelector);
               let recovered = '';
               for (const cand of candidates) {
                 try {
                   const cloc = getPlaywrightLocator(page, cand);
                   await cloc.waitFor({ state: 'visible', timeout: 3000 });
-                  if (await cloc.isEnabled()) { recovered = cand; break; }
+                  if (action.action !== 'click' || (await cloc.isEnabled())) { recovered = cand; break; }
                 } catch { /* try next candidate */ }
               }
               if (!recovered && action.assertion && action.assertion !== 'null') {

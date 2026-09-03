@@ -1,11 +1,13 @@
 import { useParams, Link } from 'react-router-dom'
 import useSWR from 'swr'
+import { Network } from 'lucide-react'
 import { Button } from '../../../components/ui/Button'
 import { Card } from '../../../components/ui/Card'
 import { EmptyState } from '../../../components/ui/EmptyState'
 import { ErrorState } from '../../../components/ui/ErrorState'
 import { PageHeader } from '../../../components/ui/PageHeader'
 import { Skeleton } from '../../../components/ui/Skeleton'
+import { isAllProjects, useData } from '../../../contexts/DataContext'
 import { api } from '../../../lib/api'
 import type { ProjectTraceability } from '../../../lib/types'
 import { ReleaseStatusBadge, SprintStatusBadge } from '../releases/statusBadges'
@@ -23,12 +25,36 @@ function Counts({ items }: { items: [string, number][] }) {
   )
 }
 
+/**
+ * One product's full Release → Sprint tree with rolled-up results. Reached two
+ * ways: the "Traceability" sidebar item (uses the active product from the top
+ * bar) and Projects → "View traceability" (uses the :projectId in the URL).
+ */
 export default function ProjectTraceabilityPage() {
-  const { projectId = '' } = useParams()
+  const { projectId: routeProjectId } = useParams()
+  const { activeProject } = useData()
+
+  const activeId =
+    activeProject && !isAllProjects(activeProject) ? activeProject.id : undefined
+  const projectId = routeProjectId ?? activeId
+
   const trace = useSWR<ProjectTraceability>(
     projectId ? ['project-traceability', projectId] : null,
-    () => api.getProjectTraceability(projectId),
+    () => api.getProjectTraceability(projectId as string),
   )
+
+  if (!projectId) {
+    return (
+      <div>
+        <PageHeader title="Traceability" description="Releases and sprints for the selected product." />
+        <EmptyState
+          icon={Network}
+          title="Select a product"
+          description="Pick a product from the menu in the top bar to see its releases, sprints and results."
+        />
+      </div>
+    )
+  }
 
   if (trace.error) {
     return (
@@ -59,6 +85,7 @@ export default function ProjectTraceabilityPage() {
         </div>
       ) : !d || d.releases.length === 0 ? (
         <EmptyState
+          icon={Network}
           title="No releases yet"
           description="Create a release and add sprints to start building product traceability."
           action={<Button href="/app/releases">Go to releases</Button>}
@@ -85,6 +112,7 @@ export default function ProjectTraceabilityPage() {
                     ['not-run', rel.totals.notRun],
                     ['new', rel.totals.new],
                     ['carried', rel.totals.carried],
+                    ['ad-hoc', rel.totals.adHocTotal],
                     ['regressions', rel.totals.regressionCount],
                   ]}
                 />
@@ -110,6 +138,7 @@ export default function ProjectTraceabilityPage() {
                           ['failed', s.failed],
                           ['partial', s.partial],
                           ['not-run', s.notRun],
+                          ['ad-hoc', s.adHoc.total],
                           ['regressions', s.regressionCount],
                         ]}
                       />

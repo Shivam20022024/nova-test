@@ -3,7 +3,7 @@ import { supabase } from '../utils/storage';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { flowProducer, executionQueueName } from '../queue/executionWorker';
 import { resolveReleaseScope, resolveSprintScope, isTestRunInProject } from '../utils/traceabilityScope';
-import { aggregateTestCaseStatus, AggregatedStatus, ExecRowLite } from '../utils/traceabilityRollup';
+import { aggregateTestCaseStatus, AggregatedStatus, ExecRowLite, normalizeExecStatus } from '../utils/traceabilityRollup';
 
 /**
  * Sprint management. A Sprint always belongs to exactly one Release
@@ -412,17 +412,48 @@ router.get('/:id/results', async (req: AuthRequest, res) => {
     // Every execution stamped for this sprint, grouped by testRunId in JS.
     const { data: execs, error: eErr } = await supabase
       .from('ExecutionLog')
-      .select('id, status, browser, createdAt, testRunId, durationMs')
-      .eq('sprintId', scope.sprint.id);
+      .select('id, status, browser, createdAt, testRunId, testName, targetUrl, durationMs, jiraTicketId')
+      .eq('sprintId', scope.sprint.id)
+      .order('createdAt', { ascending: false });
     if (eErr) throw eErr;
 
     const execByTestRun = new Map<string, ExecRowLite[]>();
+    // Sprint-scoped runs NOT tied to an assigned test case — One-Click /
+    // autonomous / Excel runs launched with this sprint selected. Surfaced
+    // separately so they are visible on the sprint even with 0 assignments.
+    const adHocRuns: any[] = [];
     for (const e of (execs || []) as any[]) {
-      if (!e.testRunId) continue; // sprint-scoped but not tied to a case (ad-hoc)
+      if (!e.testRunId) {
+        adHocRuns.push({
+          executionId: e.id,
+          status: e.status,
+          browser: e.browser,
+          testName: e.testName,
+          targetUrl: e.targetUrl,
+          durationMs: e.durationMs,
+          createdAt: e.createdAt,
+          jiraTicketId: e.jiraTicketId,
+          reportPath: `/app/execution/${e.id}/report`,
+        });
+        continue;
+      }
       const list = execByTestRun.get(e.testRunId) || [];
       list.push({ id: e.id, status: e.status, browser: e.browser, createdAt: e.createdAt });
       execByTestRun.set(e.testRunId, list);
     }
+
+    const adHocSummary = adHocRuns.reduce(
+      (acc, r) => {
+        const n = normalizeExecStatus(r.status);
+        acc.total++;
+        if (n === 'PASSED') acc.passed++;
+        else if (n === 'FAILED') acc.failed++;
+        else if (n === 'RUNNING') acc.running++;
+        else acc.other++;
+        return acc;
+      },
+      { total: 0, passed: 0, failed: 0, running: 0, other: 0 },
+    );
 
     const counts = {
       assignedTestCount: (assignments || []).length,
@@ -481,6 +512,8 @@ router.get('/:id/results', async (req: AuthRequest, res) => {
       },
       ...counts,
       testCases,
+      adHocSummary,
+      adHocRuns,
     });
   } catch (err: any) {
     console.error('Error computing sprint results:', err);

@@ -87,6 +87,7 @@ export default function AppRouter() {
         <Route path="releases" element={<ReleasesPage />} />
         <Route path="releases/:releaseId" element={<ReleaseDetailPage />} />
         <Route path="releases/:releaseId/sprints/:sprintId" element={<SprintDetailPage />} />
+        <Route path="traceability" element={<ProjectTraceabilityPage />} />
         <Route path="projects/:projectId/traceability" element={<ProjectTraceabilityPage />} />
         <Route path="execution" element={<ExecutionListPage />} />
         <Route path="execution/:id" element={<ExecutionDetailPage />} />

@@ -249,6 +249,38 @@ export default function SprintDetailPage() {
         </Card>
       )}
 
+      {/* Ad-hoc runs — One-Click / autonomous runs launched with this sprint
+          selected. They carry the sprint but no assigned test case. */}
+      {d && d.adHocRuns.length > 0 && (
+        <div className="mt-8">
+          <h2 className="mb-1 font-sans text-sm font-semibold text-ink">Ad-hoc runs</h2>
+          <p className="mb-3 text-xs text-muted">
+            Launched from One-Click / autonomous with this sprint selected. Not tied to an assigned test case —{' '}
+            <span className="font-mono">{d.adHocSummary.passed}</span> passed ·{' '}
+            <span className="font-mono">{d.adHocSummary.failed}</span> failed ·{' '}
+            <span className="font-mono">{d.adHocSummary.running}</span> running of{' '}
+            <span className="font-mono">{d.adHocSummary.total}</span>.
+          </p>
+          <Card className="overflow-hidden p-0">
+            <ul className="divide-y divide-line">
+              {d.adHocRuns.map((r) => (
+                <li key={r.executionId} className="flex flex-wrap items-center gap-3 px-4 py-2.5 text-sm">
+                  <AggregatedStatusBadge status={
+                    /(passed|completed|completed with warnings)/i.test(r.status) ? 'PASSED'
+                    : /(failed|blocked)/i.test(r.status) ? 'FAILED'
+                    : /(queued|running|pending|generating|healing)/i.test(r.status) ? 'RUNNING'
+                    : 'SKIPPED'
+                  } />
+                  <span className="min-w-0 flex-1 truncate text-ink">{r.testName || r.targetUrl || r.executionId}</span>
+                  <span className="font-mono text-xs text-muted">{r.browser} · {new Date(r.createdAt).toLocaleString()}</span>
+                  <Link to={r.reportPath} className="font-mono text-xs text-accent hover:underline">Report</Link>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        </div>
+      )}
+
       {/* Assign modal */}
       <Modal open={assignOpen} onClose={() => setAssignOpen(false)} title="Assign test cases">
         <div className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto">

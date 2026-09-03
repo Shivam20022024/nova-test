@@ -357,6 +357,23 @@ export const api = {
     })
   },
 
+  /** Run one test case directly — no sprint / release / assignment change.
+   *  Returns 202 with the new executionId; poll it via getRunDetails. */
+  runTestCase(testRunId: string, opts?: { browser?: string }) {
+    return this.request<{
+      message: string
+      executionId: string
+      executionIds: string[]
+      testRunId: string
+      testName: string
+      browser: string
+      status: string
+    }>(`/api/v1/test-cases/${testRunId}/run`, {
+      method: 'POST',
+      body: JSON.stringify(opts ?? {}),
+    })
+  },
+
   getTestCaseTraceability(testRunId: string) {
     return this.request<TestCaseTraceability>(`/api/v1/test-cases/${testRunId}/traceability`)
   },

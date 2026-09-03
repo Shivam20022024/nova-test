@@ -6,6 +6,7 @@ import {
   aggregateTestCaseStatus,
   buildTestCaseTimeline,
   detectRegression,
+  normalizeExecStatus,
   ExecRowLite,
   ReleaseMeta,
   SprintMeta,
@@ -259,9 +260,18 @@ router.get('/:id/traceability', async (req: AuthRequest, res) => {
     const execByPair = new Map<string, ExecRowLite[]>();
     // testRunId -> all project exec rows, for the regression timeline.
     const execByTestRun = new Map<string, (ExecRowLite & { sprintId: string | null })[]>();
+    // sprintId -> ad-hoc runs: stamped for the sprint but NOT tied to an
+    // assigned test case (One-Click / autonomous / Excel runs launched with a
+    // sprint selected). Rolled up separately so they still show per sprint.
+    const adHocBySprint = new Map<string, ExecRowLite[]>();
     for (const e of (execs || []) as any[]) {
-      if (!e.testRunId) continue;
       const lite: ExecRowLite = { id: e.id, status: e.status, browser: e.browser, createdAt: e.createdAt };
+      if (!e.testRunId) {
+        if (e.sprintId) {
+          (adHocBySprint.get(e.sprintId) || adHocBySprint.set(e.sprintId, []).get(e.sprintId))!.push(lite);
+        }
+        continue;
+      }
       if (e.sprintId) {
         const k = `${e.sprintId}|${e.testRunId}`;
         (execByPair.get(k) || execByPair.set(k, []).get(k))!.push(lite);
@@ -271,6 +281,19 @@ router.get('/:id/traceability', async (req: AuthRequest, res) => {
         sprintId: e.sprintId,
       });
     }
+
+    const summariseAdHoc = (sprintId: string) => {
+      const rows = adHocBySprint.get(sprintId) || [];
+      const s = { total: rows.length, passed: 0, failed: 0, running: 0, other: 0 };
+      for (const r of rows) {
+        const n = normalizeExecStatus(r.status);
+        if (n === 'PASSED') s.passed++;
+        else if (n === 'FAILED') s.failed++;
+        else if (n === 'RUNNING') s.running++;
+        else s.other++;
+      }
+      return s;
+    };
 
     const sprintsById = new Map<string, SprintMeta>(
       (sprints || []).map((s: any) => [s.id, s as SprintMeta]),
@@ -320,6 +343,7 @@ router.get('/:id/traceability', async (req: AuthRequest, res) => {
         startDate: sprint.startDate,
         endDate: sprint.endDate,
         regressionCount: regressionBySprint.get(sprint.id) || 0,
+        adHoc: summariseAdHoc(sprint.id),
         ...counts,
       };
     };
@@ -331,9 +355,10 @@ router.get('/:id/traceability', async (req: AuthRequest, res) => {
           acc.assigned += s.assigned; acc.passed += s.passed; acc.failed += s.failed;
           acc.notRun += s.notRun; acc.regressionCount += s.regressionCount;
           acc.new += s.new; acc.carried += s.carried;
+          acc.adHocTotal += s.adHoc.total; acc.adHocPassed += s.adHoc.passed; acc.adHocFailed += s.adHoc.failed;
           return acc;
         },
-        { assigned: 0, passed: 0, failed: 0, notRun: 0, regressionCount: 0, new: 0, carried: 0 },
+        { assigned: 0, passed: 0, failed: 0, notRun: 0, regressionCount: 0, new: 0, carried: 0, adHocTotal: 0, adHocPassed: 0, adHocFailed: 0 },
       );
       return {
         id: rel.id,

@@ -726,7 +726,24 @@ export type SprintResults = {
     executionCount: number
     latestExecutions: Array<{ browser: string; executionId: string; status: string; createdAt: string }>
   }>
+  adHocSummary: AdHocSummary
+  adHocRuns: AdHocRun[]
 }
+
+/** Runs stamped for a sprint but not tied to an assigned test case
+ *  (One-Click / autonomous / Excel launched with a sprint selected). */
+export type AdHocRun = {
+  executionId: string
+  status: ExecutionStatus
+  browser: string | null
+  testName: string | null
+  targetUrl: string | null
+  durationMs: number | null
+  createdAt: string
+  jiraTicketId: string | null
+  reportPath: string
+}
+export type AdHocSummary = { total: number; passed: number; failed: number; running: number; other: number }
 
 /** POST /api/v1/sprints/:id/run response */
 export type SprintRunResult = {
@@ -811,7 +828,11 @@ export type ProjectTraceability = {
     startDate: string | null
     endDate: string | null
     sprintCount: number
-    totals: { assigned: number; passed: number; failed: number; notRun: number; regressionCount: number; new: number; carried: number }
+    totals: {
+      assigned: number; passed: number; failed: number; notRun: number; regressionCount: number
+      new: number; carried: number
+      adHocTotal: number; adHocPassed: number; adHocFailed: number
+    }
     sprints: Array<{
       id: string
       name: string
@@ -829,6 +850,7 @@ export type ProjectTraceability = {
       notRun: number
       new: number
       carried: number
+      adHoc: AdHocSummary
     }>
   }>
 }
