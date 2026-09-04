@@ -79,3 +79,4 @@ httpServer.listen(PORT, () => {
   console.log(`Novalantis Backend running on port ${PORT}`);
 });
 
+// trigger nodemon restart

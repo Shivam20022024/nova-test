@@ -12,17 +12,28 @@ import { api } from '../../../lib/api'
 import type { ProjectTraceability } from '../../../lib/types'
 import { ReleaseStatusBadge, SprintStatusBadge } from '../releases/statusBadges'
 
+type CountItem = [label: string, value: number, detail?: string]
+
 /** Compact counts strip used at both release and sprint level. */
-function Counts({ items }: { items: [string, number][] }) {
+function Counts({ items }: { items: CountItem[] }) {
   return (
     <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-xs">
-      {items.map(([label, value]) => (
+      {items.map(([label, value, detail]) => (
         <span key={label} className={value > 0 && label === 'regressions' ? 'text-fail' : 'text-muted'}>
           {label} <span className="text-ink">{value}</span>
+          {detail && value > 0 && <span className="text-muted"> {detail}</span>}
         </span>
       ))}
     </div>
   )
+}
+
+const adHocDetail = (a: { passed: number; failed: number; running: number }) => {
+  const parts: string[] = []
+  if (a.passed) parts.push(`${a.passed}✓`)
+  if (a.failed) parts.push(`${a.failed}✗`)
+  if (a.running) parts.push(`${a.running}…`)
+  return parts.length ? `(${parts.join(' ')})` : undefined
 }
 
 /**
@@ -112,7 +123,7 @@ export default function ProjectTraceabilityPage() {
                     ['not-run', rel.totals.notRun],
                     ['new', rel.totals.new],
                     ['carried', rel.totals.carried],
-                    ['ad-hoc', rel.totals.adHocTotal],
+                    ['ad-hoc', rel.totals.adHocTotal, adHocDetail({ passed: rel.totals.adHocPassed, failed: rel.totals.adHocFailed, running: 0 })],
                     ['regressions', rel.totals.regressionCount],
                   ]}
                 />
@@ -138,7 +149,7 @@ export default function ProjectTraceabilityPage() {
                           ['failed', s.failed],
                           ['partial', s.partial],
                           ['not-run', s.notRun],
-                          ['ad-hoc', s.adHoc.total],
+                          ['ad-hoc', s.adHoc.total, adHocDetail(s.adHoc)],
                           ['regressions', s.regressionCount],
                         ]}
                       />
