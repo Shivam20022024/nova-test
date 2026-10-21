@@ -34,7 +34,7 @@ from mobile.appium_manager import (
     stop_server,
 )
 from mobile.database import SessionLocal
-from mobile.engine import _emit, _fail_infra, _ms_between, _now, execute_test_steps
+from mobile.engine import _emit, _fail_infra, _ms_between, _now, _resolve_app_path, execute_test_steps
 from mobile.live import FrameStreamer, event_bus
 from mobile.models import (
     MobileApplication,
@@ -53,13 +53,13 @@ logger = get_logger("mobile.suite_engine")
 FFMPEG_BIN = shutil.which("ffmpeg")
 
 
-def run_suite(suite_id: int, release_id: Optional[str] = None) -> None:
+def run_suite(suite_id: int, release_id: Optional[str] = None, sprint_id: Optional[str] = None) -> None:
     """Entry point invoked from the API layer via a background thread —
     mirrors run_execution()'s BackgroundTasks pattern but for a whole suite.
-    `release_id` is an optional tag (a web-side Release's id) stamped onto
-    every execution this suite creates — passed straight through rather
-    than stored on the suite itself, so tagging a run with a release needed
-    no new column beyond the one already added to MobileExecution."""
+    `release_id`/`sprint_id` are optional tags (a web-side Release/Sprint's
+    id) stamped onto every execution this suite creates — passed straight
+    through rather than stored on the suite itself, so tagging a run needed
+    no new column beyond the ones already added to MobileExecution."""
     db = SessionLocal()
     driver = None
     appium_handle: Optional[AppiumServerHandle] = None
@@ -112,7 +112,7 @@ def run_suite(suite_id: int, release_id: Optional[str] = None) -> None:
             MobileExecution(
                 test_id=test.id, application_version_id=app_version.id if app_version else None,
                 device_id=device.id if device else None, suite_id=suite.id,
-                environment="DEV", status="QUEUED", release_uuid=release_id,
+                environment="DEV", status="QUEUED", release_uuid=release_id, sprint_uuid=sprint_id,
                 environment_snapshot={"execution_policy": policy.dict()},
             )
             for test in tests
@@ -156,7 +156,7 @@ def run_suite(suite_id: int, release_id: Optional[str] = None) -> None:
             _finish_suite(db, suite)
             return
 
-        app_path = app_version.file_path if app_version else None
+        app_path = _resolve_app_path(app_version)
         app_package = application.package_name if application else None
         app_activity = app_version.launchable_activity if app_version else None
 

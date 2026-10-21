@@ -60,11 +60,23 @@ def generate_candidates(
     historically_successful_before: bool = False,
     top_k: int = 5,
 ) -> List[Dict[str, object]]:
-    anchor_value = (original_locator.value or "").strip()
+    # A semantic locator's `value` is often a synthesized, compound description
+    # ("Sauce Labs Backpack product image") rather than a literal on-screen
+    # string — the actual anchor text is usually just a substring of it (the
+    # product's own title, "Sauce Labs Backpack"). Exact equality would never
+    # find that anchor at all; containment finds it while still correctly
+    # rejecting a DIFFERENT card's title ("Sauce Labs Backpack (green)" is not
+    # a substring of the locator value, and the locator value is not a
+    # substring of it either), so disambiguation between repeated cards holds.
+    anchor_value = (original_locator.value or "").strip().lower()
     anchor_nodes = []
     if anchor_value and requires_interactive:
         for n in nodes:
-            if n.attrs.get("text", "").strip() == anchor_value or n.attrs.get("content-desc", "").strip() == anchor_value:
+            node_text = n.attrs.get("text", "").strip().lower()
+            node_desc = n.attrs.get("content-desc", "").strip().lower()
+            if (len(node_text) >= 3 and (node_text in anchor_value or anchor_value in node_text)) or (
+                len(node_desc) >= 3 and (node_desc in anchor_value or anchor_value in node_desc)
+            ):
                 anchor_nodes.append(n)
 
     scored = []

@@ -246,6 +246,7 @@ def run_exploration(
     from mobile import device_manager
     from mobile.appium_manager import create_uiautomator2_session, quit_session, start_server, stop_server
     from mobile.database import SessionLocal
+    from mobile.engine import _resolve_app_path
     from mobile.models import MobileApplication, MobileApplicationVersion, MobileDevice
 
     db = SessionLocal()
@@ -269,7 +270,7 @@ def run_exploration(
         appium_handle = start_server()
         driver = create_uiautomator2_session(
             appium_handle.base_url, device.serial,
-            app_path=version.file_path, app_package=application.package_name,
+            app_path=_resolve_app_path(version), app_package=application.package_name,
             app_activity=version.launchable_activity, no_reset=False,
         )
 

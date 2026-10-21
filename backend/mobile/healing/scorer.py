@@ -54,6 +54,24 @@ def _token_overlap(a: str, b: str) -> float:
     return len(ta & tb) / max(len(ta), len(tb))
 
 
+def _token_containment(short: str, long: str) -> float:
+    """What fraction of `short`'s own tokens appear in `long` — for a concise,
+    precise attribute (a content-desc, a label) matched against a semantic
+    hint that legitimately wraps it in more qualifying context (a product
+    name, a row label, a screen name, ...). `_fuzzy_ratio`'s character-level
+    similarity and `_token_overlap`'s divide-by-the-LARGER-set ratio both
+    penalize this in proportion to how much MORE the hint says — a short,
+    exact attribute fully restated inside a much longer hint scores low on
+    both even though it is a perfect match. This only asks "is everything the
+    attribute says also said by the hint," which does not degrade with the
+    hint's own length. Generic: applies to any app/element, not tuned to a
+    specific one."""
+    ts, tl = set(_tokenize(short)), set(_tokenize(long))
+    if not ts or not tl:
+        return 0.0
+    return len(ts & tl) / len(ts)
+
+
 def score_candidate(
     node: ElementNode,
     original_value: str,
@@ -95,15 +113,19 @@ def score_candidate(
     # hint — is scored at that same top tier, not a discounted fuzzy tier.
     if content_desc and content_desc == original_value:
         score += WEIGHTS["exact_accessibility_id"]; signals["exact_accessibility_id"] = True
-    elif content_desc and hint and _fuzzy_ratio(content_desc, hint) > 0.6:
-        ratio = _fuzzy_ratio(content_desc, hint)
-        score += WEIGHTS["exact_accessibility_id"] * ratio
-        signals["content_desc_hint_match"] = round(ratio, 3)
+    elif content_desc and hint:
+        ratio = max(_fuzzy_ratio(content_desc, hint), _token_containment(content_desc, hint))
+        if ratio > 0.6:
+            score += WEIGHTS["exact_accessibility_id"] * ratio
+            signals["content_desc_hint_match"] = round(ratio, 3)
 
     if text and text == original_value:
         score += WEIGHTS["exact_text"]; signals["exact_text"] = True
     elif text:
-        ratio = max(_fuzzy_ratio(text, original_value), _fuzzy_ratio(text, hint or ""))
+        ratio = max(
+            _fuzzy_ratio(text, original_value), _fuzzy_ratio(text, hint or ""),
+            _token_containment(text, hint or ""),
+        )
         if ratio > 0.5:
             score += WEIGHTS["fuzzy_text"] * ratio
             signals["fuzzy_text"] = round(ratio, 3)
@@ -112,7 +134,7 @@ def score_candidate(
     # (already folded into the accessibility-tier signal above) to avoid
     # double-counting the same evidence under two weight buckets.
     if hint:
-        hint_ratio = max(_fuzzy_ratio(text, hint), _token_overlap(resource_id, hint))
+        hint_ratio = max(_fuzzy_ratio(text, hint), _token_overlap(resource_id, hint), _token_containment(resource_id, hint))
         if hint_ratio > 0.5:
             score += WEIGHTS["hint_semantic_match"] * hint_ratio
             signals["hint_semantic_match"] = round(hint_ratio, 3)

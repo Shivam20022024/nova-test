@@ -18,12 +18,14 @@ from mobile.locators import (
     get_current_activity,
     get_current_package,
     is_editable,
+    looks_like_screen_locator,
     parse_hierarchy,
     capture_hierarchy_xml,
     resolve_by_hint,
     resolve_element,
     tap_element,
     wait_for_element,
+    wait_for_screen,
     wait_for_stable_content,
     _scroll_into_view,
 )
@@ -48,6 +50,12 @@ class ActionContext:
         # network, GPS — see actions.py's "Device conditions" section) need
         # the raw adb serial. Every existing action ignores this field.
         self.device_serial = device_serial
+        # Screen signature captured by the engine right before a step that
+        # is itself a screen-level WAIT_FOR_ELEMENT (see wait_for_screen) —
+        # None for every other step. Lets that one check tell "genuinely
+        # navigated somewhere new" apart from "same screen, coincidentally
+        # mentions a matching word."
+        self.last_screen_signature: Optional[str] = None
 
 
 def _require_locator(step: TestStep) -> None:
@@ -411,6 +419,21 @@ def _wait(driver, step: TestStep, ctx: ActionContext) -> ActionOutcome:
 
 
 def _wait_for_element(driver, step: TestStep, ctx: ActionContext) -> ActionOutcome:
+    locator = step.locator
+    name = (locator.value or locator.hint or "").strip() if locator and locator.strategy in ("semantic", "hint") else ""
+    if name and looks_like_screen_locator(name):
+        # A screen-level wait ("the product detail screen") names a whole
+        # screen, not one element — try the holistic screen check first
+        # (see wait_for_screen), then fall back to the ordinary per-element
+        # hint matcher with whatever budget remains. Some screens genuinely
+        # do carry an explicit heading that already matched before this
+        # existed, so the fallback keeps that case working unchanged.
+        screen_timeout = max(1500, int(step.timeout_ms * 0.7))
+        if wait_for_screen(driver, name, screen_timeout, before_signature=ctx.last_screen_signature):
+            return ActionOutcome(status="PASSED", resolved_locator=locator.dict() if locator else None)
+        remaining = max(1500, step.timeout_ms - screen_timeout)
+        _resolve(driver, step, timeout_ms=remaining)
+        return ActionOutcome(status="PASSED", resolved_locator=locator.dict() if locator else None)
     _resolve(driver, step)
     return ActionOutcome(status="PASSED", resolved_locator=step.locator.dict() if step.locator else None)
 

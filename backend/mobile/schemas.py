@@ -73,7 +73,15 @@ class EvidencePolicy(BaseModel):
 class HealingPolicy(BaseModel):
     enabled: bool = True
     auto_apply_threshold: float = 95.0
-    review_threshold: float = 80.0
+    # A candidate with a full content-desc/hint containment match plus solid
+    # anchor proximity (the common, well-evidenced "repeated card" case — see
+    # scorer.py's _token_containment) lands in the high-70s, not the 80s+ a
+    # pure fuzzy-ratio match would score. 80.0 blocked exactly that
+    # legitimate case on auto-apply; 75.0 still clears well above a
+    # proximity-only guess with no semantic signal at all (~50-55, as
+    # observed for an unrelated same-card element), so ambiguous ties still
+    # get flagged while a well-evidenced match no longer waits on a human.
+    review_threshold: float = 75.0
     critical_action_approval_required: bool = True
 
 
@@ -171,6 +179,7 @@ class TestCreateRequest(BaseModel):
     risk_level: str = "LOW_RISK"
     device_id: Optional[int] = None  # when set, wraps this test in a suite-of-one and auto-runs it immediately
     release_id: Optional[str] = None  # optional Release tag for the auto-run, if device_id is also set
+    sprint_id: Optional[str] = None  # optional Sprint tag for the auto-run, if device_id is also set
 
 
 class ExecutionCreateRequest(BaseModel):
@@ -186,6 +195,8 @@ class ExecutionCreateRequest(BaseModel):
     # ExecutionCreateRequest's release_id on the Node side for the same
     # concept) — a plain id string, not validated against anything here.
     release_id: Optional[str] = None
+    # Same treatment for a web-side Sprint id.
+    sprint_id: Optional[str] = None
 
 
 class CompatibilityRunCreateRequest(BaseModel):

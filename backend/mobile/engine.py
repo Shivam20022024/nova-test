@@ -40,6 +40,7 @@ from mobile.locators import (
     capture_hierarchy_xml,
     get_current_activity,
     get_current_package,
+    looks_like_screen_locator,
     parse_hierarchy,
 )
 from mobile.models import (
@@ -59,6 +60,24 @@ from utils.logger import get_logger
 logger = get_logger("mobile.engine")
 
 NON_RETRYABLE_TERMINAL_STATUSES = {"PASSED", "FAILED", "BLOCKED", "CANCELLED", "REQUIRES_REVIEW", "INFRA_FAILURE"}
+
+# Mirrors api.py's APK_STORAGE_DIR / f"{sha256}.apk" convention. app_version.file_path
+# is an *absolute* path recorded on whichever machine handled the upload — on a shared
+# (e.g. Supabase) database with more than one backend instance/dev machine, that path
+# does not exist on the box actually running this execution. The upload naming is
+# deterministic, so re-deriving it locally from sha256 is portable; file_path is kept
+# only as a fallback for a build that predates the sha256 column or whose file already
+# happens to live at that exact absolute path (single-machine dev).
+APK_STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage" / "mobile" / "apks"
+
+
+def _resolve_app_path(app_version: Optional["MobileApplicationVersion"]) -> Optional[str]:
+    if app_version is None:
+        return None
+    local_candidate = APK_STORAGE_DIR / f"{app_version.sha256}.apk"
+    if local_candidate.exists():
+        return str(local_candidate)
+    return app_version.file_path
 
 
 def _now() -> datetime.datetime:
@@ -115,6 +134,31 @@ def execute_test_steps(db, driver, execution, test, ctx, policy, application, ap
               locator=step.locator.dict() if step.locator else None)
 
         _dismiss_system_dialog_if_present(execution_id, driver)
+
+        # A screen-level WAIT_FOR_ELEMENT (see locators.wait_for_screen) needs
+        # to tell "genuinely navigated to a new screen" apart from "same
+        # screen, coincidentally mentions a matching word" — that requires a
+        # snapshot from BEFORE the transition happened. By the time the
+        # WAIT_FOR_ELEMENT step itself starts, whatever caused the transition
+        # (the step before it — a TAP, a swipe, ...) has already finished and
+        # already settled, so capturing "before" at that point would just
+        # capture the same post-transition state again. Capture it one step
+        # early instead: right before THIS step runs, only when the step
+        # immediately AFTER it is a screen-level wait, so it reflects the
+        # state right before whatever this step is about to do.
+        next_step_dict = test.steps[idx + 1] if idx + 1 < len(test.steps) else None
+        if next_step_dict and next_step_dict.get("action") == "WAIT_FOR_ELEMENT":
+            next_locator = next_step_dict.get("locator") or {}
+            next_name = next_locator.get("value") or next_locator.get("hint") or ""
+            if next_locator.get("strategy") in ("semantic", "hint") and looks_like_screen_locator(next_name):
+                try:
+                    xml_before = capture_hierarchy_xml(driver)
+                    ctx.last_screen_signature = build_screen_signature(
+                        get_current_package(driver) or "", get_current_activity(driver), parse_hierarchy(xml_before),
+                    )
+                except Exception:
+                    ctx.last_screen_signature = None
+
         outcome = _run_single_action(driver, step, ctx)
         resolved_via_fallback = consume_resolved_via_fallback()
         healed = False
@@ -297,7 +341,7 @@ def run_execution(execution_id: int) -> None:
         db.commit()
         _emit(execution_id, "status", status="STARTING_SESSION")
 
-        app_path = app_version.file_path if app_version else None
+        app_path = _resolve_app_path(app_version)
         app_package = application.package_name if application else None
         app_activity = app_version.launchable_activity if app_version else None
 

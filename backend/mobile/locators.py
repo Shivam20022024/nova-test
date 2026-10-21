@@ -359,6 +359,104 @@ def _label_tokens(value: str) -> set:
     return {t for t in re.split(r"\s+", value.lower()) if len(t) > 1}
 
 
+# English function words carry no identifying content of their own — "to" in
+# a hint ("the icon TO open the cart") matching "to" inside an unrelated
+# element's own text ("Tap TO add...") is coincidence, not evidence, yet a
+# bare token-overlap count treats it exactly like a real shared content word.
+# Small, fixed, and language-generic — not tuned to any one hint or app.
+_STOPWORDS = {"the", "a", "an", "to", "of", "on", "in", "is", "at", "for", "and", "or", "with", "this", "that"}
+
+
+# ── Screen-level semantic verification ──────────────────────────────────
+# A semantic WAIT_FOR_ELEMENT locator sometimes names a whole SCREEN ("the
+# product detail screen") rather than one element ("the submit button").
+# resolve_by_hint below is built to find one element whose OWN text/
+# content-desc/nearby-label matches the hint — but a screen very often never
+# spells its own name out verbatim anywhere on itself (a product detail page
+# doesn't literally say "detail" anywhere), so that per-element matcher
+# systematically fails on a screen that in fact loaded correctly. This is a
+# different, screen-level check: generic and app-agnostic, not tuned to any
+# one screen name or app.
+
+_SCREEN_SUFFIX_WORDS = {"screen", "page", "view", "tab", "dialog", "modal", "sheet"}
+_SCREEN_STOPWORDS = {"the", "a", "an", "this", "that", "current", "new"}
+
+
+def looks_like_screen_locator(value: Optional[str]) -> bool:
+    """True when `value`'s own LAST word is a generic screen/page noun — the
+    vocabulary a test author or an AI generator naturally uses for "we should
+    now be looking at X" ('the product detail screen', 'the settings page').
+    Purely lexical, no app knowledge."""
+    value = (value or "").strip().lower()
+    if not value:
+        return False
+    last_word = re.split(r"\s+", value)[-1]
+    return last_word in _SCREEN_SUFFIX_WORDS
+
+
+def _screen_meaningful_tokens(value: str) -> set:
+    """The screen name's own content words — everything except the generic
+    trailing noun ('screen'/'page'/...) and stopwords, which carry no
+    identifying signal of their own."""
+    return {t for t in _label_tokens(value) if t not in _SCREEN_SUFFIX_WORDS and t not in _SCREEN_STOPWORDS}
+
+
+def _hierarchy_text_tokens(nodes: List["ElementNode"]) -> set:
+    tokens: set = set()
+    for n in nodes:
+        for attr in ("text", "content-desc"):
+            v = n.attrs.get(attr)
+            if v:
+                tokens |= _label_tokens(v)
+    return tokens
+
+
+def wait_for_screen(
+    driver, screen_name: str, timeout_ms: int,
+    before_signature: Optional[str] = None, poll_interval_s: float = 0.4,
+) -> bool:
+    """"Are we on the right screen?" — combines two fully generic signals
+    that together are hard to satisfy by accident, without requiring any
+    single element to literally spell out the screen's own name:
+
+      1. keyword recall — does at least one of the screen name's own
+         meaningful words appear ANYWHERE in the current hierarchy's visible
+         text/content-desc, spread across any number of elements (not
+         necessarily one)?
+      2. structural change — has the screen actually changed from the
+         snapshot captured right before this step began (real navigation
+         happened), when a before-snapshot is available at all?
+
+    Both must hold when a before-snapshot is given — keyword recall alone
+    would accept "the same unrelated screen that happens to mention one
+    shared word"; a bare screen change alone would accept "navigated to
+    literally anywhere." Neither check depends on any specific app, screen
+    name, or element."""
+    deadline = time.time() + timeout_ms / 1000.0
+    wanted = _screen_meaningful_tokens(screen_name)
+    if not wanted:
+        return False
+    while time.time() < deadline:
+        try:
+            nodes = parse_hierarchy(capture_hierarchy_xml(driver))
+        except Exception:
+            time.sleep(poll_interval_s)
+            continue
+        if wanted & _hierarchy_text_tokens(nodes):
+            if before_signature is None:
+                return True
+            try:
+                current_signature = build_screen_signature(
+                    get_current_package(driver) or "", get_current_activity(driver), nodes,
+                )
+            except Exception:
+                current_signature = None
+            if current_signature is None or current_signature != before_signature:
+                return True
+        time.sleep(poll_interval_s)
+    return False
+
+
 def resolve_by_hint(driver, hint: str, want_role: str = "any"):
     """Resolve a step to a live element using only its human-language `hint`
     ('the username field', 'submit the transfer') — no literal locator value.
@@ -378,7 +476,27 @@ def resolve_by_hint(driver, hint: str, want_role: str = "any"):
         raise NoSuchElementException("resolve_by_hint: empty hint")
     nodes = parse_hierarchy(capture_hierarchy_xml(driver))
     visible = [n for n in nodes if (n.bounds_box and (n.bounds_box[2] - n.bounds_box[0]) > 0 and (n.bounds_box[3] - n.bounds_box[1]) > 0)]
-    htok = _label_tokens(hint)
+    htok_raw = _label_tokens(hint)
+    htok = htok_raw - _STOPWORDS
+
+    # How many of this screen's own elements share a given token — Android
+    # resource-ids very commonly follow an {entity}{RoleAbbrev} convention
+    # ("productTV", "productIV", "productRV" all sharing "product" even
+    # though they are a title, an image, and a list), so a word appearing in
+    # MANY elements' own identity is weak, non-distinguishing evidence, while
+    # one appearing in only one or two is strong. Purely statistical over
+    # THIS screen's own elements at this moment — no app-specific knowledge.
+    # Deliberately conservative: only heavily-shared tokens (3+ elements) are
+    # discounted; anything less common keeps its original full weight, so
+    # this can only ever reduce a false match's score, never inflate one.
+    _token_df: Dict[str, int] = {}
+    for _n in visible:
+        _own = " ".join(filter(None, [_n.attrs.get("text", ""), _n.attrs.get("content-desc", ""), _n.attrs.get("resource-id", "")]))
+        for _t in _label_tokens(_own):
+            _token_df[_t] = _token_df.get(_t, 0) + 1
+
+    def _token_weight(t: str) -> float:
+        return 0.34 if _token_df.get(t, 1) >= 3 else 1.0
 
     # Excludes clickable elements: nearest-label borrowing exists for the
     # unlabelled-input-next-to-its-static-caption pattern (a passive TextView
@@ -464,11 +582,35 @@ def resolve_by_hint(driver, hint: str, want_role: str = "any"):
         # within the proximity radius — the paragraph never needed to
         # borrow anything, it already had 140+ characters of its own text.
         own_has_identity = bool((n.attrs.get("text") or "").strip() or (n.attrs.get("content-desc") or "").strip())
-        near = "" if own_has_identity else nearest_label_text(n)
+        # element_role() falls through to "other" for anything that is not
+        # editable, not a toggle, not clickable, not an image, and has no
+        # text/content-desc of its own — a bare layout container (FrameLayout,
+        # LinearLayout, DrawerLayout, ...) or stray system-chrome view
+        # (navigationBarBackground) always lands here. Its bounding box
+        # routinely spans most of the screen, so its centroid can sit
+        # "nearest" to almost any label purely by chance of geometry — letting
+        # it "borrow" an unrelated element's identity and win purely on a
+        # coincidence of layout, not any real relationship to that label.
+        # Confirmed live: every ancestor container from the screen root down
+        # to an unrelated image's own wrapper tied for the TOP score on an
+        # unrelated hint, all having borrowed that image's content-desc this
+        # way — beating the real target and resolving to an unlocatable
+        # structural node instead. A CLICKABLE container (role "button" — a
+        # whole card acting as one) is deliberately not excluded here: that
+        # is a genuine, common UI target, not layout chrome.
+        near = "" if (own_has_identity or element_role(n) == "other") else nearest_label_text(n)
         near_tok = _label_tokens(near)
-        overlap = len(htok & (own_tok | near_tok))
+        overlap = sum(_token_weight(t) for t in (htok & (own_tok | near_tok)))
+        # Text is not the only place an element states its own identity —
+        # content-desc is exactly as valid, and for an icon-only control
+        # (no visible text at all, e.g. a header's cart icon) it is the ONLY
+        # place. Comparing ratio against text alone structurally starves
+        # every icon-only control of this signal while a nearby text-labelled
+        # control gets it for free — not because the text-labelled one is a
+        # better match, only because it happens to have a `text` attribute.
         ratio = max(
             _difflib.SequenceMatcher(None, hint.lower(), (n.attrs.get("text") or "").lower()).ratio() if n.attrs.get("text") else 0.0,
+            _difflib.SequenceMatcher(None, hint.lower(), (n.attrs.get("content-desc") or "").lower()).ratio() if n.attrs.get("content-desc") else 0.0,
             _difflib.SequenceMatcher(None, hint.lower(), near.lower()).ratio() if near else 0.0,
         )
         s = overlap * 3 + ratio * 2
@@ -487,6 +629,17 @@ def resolve_by_hint(driver, hint: str, want_role: str = "any"):
             # evidence than a same-scoring plain text label for that —
             # without this, a text-role candidate is never even at a
             # disadvantage in a tie it has no business winning.
+            s += 1.0
+        # A hint's own wording often states the expected WIDGET TYPE, not
+        # just its content ("the ICON to open the cart" vs "the ADD TO CART
+        # BUTTON") — a real, conventional Button widget is rarely what a
+        # human/AI author calls "an icon." Confirmed live: on a screen with
+        # both a labelled "Add to cart" Button and an unlabelled cart-icon
+        # control, both matched the token "cart" equally, and only this
+        # signal correctly favored the icon over the button for an
+        # icon-hinted step. Generic — keys off the hint's own vocabulary and
+        # the element's own class, not any specific app or screen.
+        if "icon" in htok_raw and "Button" not in n.attrs.get("class", "") and role in ("button", "toggle", "image"):
             s += 1.0
         if s > 0:
             scored.append((s, n))

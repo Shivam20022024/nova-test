@@ -485,7 +485,7 @@ def create_test(payload: TestCreateRequest, db: Session = Depends(get_db)):
         suite_id = _create_suite_and_run(
             db, name=payload.name, application_id=payload.application_id,
             device_id=payload.device_id, source="NL_GENERATE", tests=[test],
-            release_id=payload.release_id,
+            release_id=payload.release_id, sprint_id=payload.sprint_id,
         )
 
     return {"id": test.id, "name": test.name, "suite_id": suite_id}
@@ -857,6 +857,7 @@ async def generate_test(
     application_id: Optional[int] = Form(None),
     device_id: Optional[int] = Form(None),
     release_id: Optional[str] = Form(None),
+    sprint_id: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     """AI-assisted draft generation from a natural-language objective, a pasted
@@ -910,10 +911,38 @@ async def generate_test(
         version = _latest_valid_version(db, application_id)
         if version:
             from mobile.explorer import run_exploration
-            try:
-                screen_map = run_exploration(version.id, device_id, max_screens=4, time_budget_s=45)
-            except Exception as exc:
-                logger.warning("Quick pre-generation exploration failed (continuing ungrounded): %s", exc)
+
+            # run_exploration's own time_budget_s only bounds the crawl phase —
+            # Appium server start-up (its own 120s x 3-attempt budget) and
+            # UiAutomator2 session creation (3 attempts, 5s apart, each attempt
+            # itself uncapped) both run before that and are NOT bounded by it.
+            # On a device where session creation reliably fails (an unhealthy
+            # instrumentation state, a busy emulator, ...) this "cheap, ~45s"
+            # pass could otherwise block this synchronous request for minutes.
+            # run_exploration is explicitly documented as "safe to call in a
+            # background thread" (it owns its own DB session and releases the
+            # device itself), so enforce the real deadline here instead: give
+            # up waiting at the budget (plus a small grace period for the
+            # crawl's own internal bookkeeping) and fall through to ungrounded
+            # generation — the thread finishes on its own and still persists
+            # the screen map for the NEXT generation to benefit from.
+            _explore_result: Dict[str, Any] = {}
+
+            def _run() -> None:
+                try:
+                    _explore_result["screen_map"] = run_exploration(version.id, device_id, max_screens=4, time_budget_s=45)
+                except Exception as exc:  # noqa: BLE001
+                    _explore_result["error"] = exc
+
+            explore_thread = threading.Thread(target=_run, daemon=True)
+            explore_thread.start()
+            explore_thread.join(timeout=50)
+            if explore_thread.is_alive():
+                logger.warning("Quick pre-generation exploration exceeded its budget (continuing ungrounded); it keeps running in the background.")
+            elif "error" in _explore_result:
+                logger.warning("Quick pre-generation exploration failed (continuing ungrounded): %s", _explore_result["error"])
+            else:
+                screen_map = _explore_result.get("screen_map")
     grounding = None if screen_map else _ground_from_recent_hierarchy(db, application_id)
 
     from mobile.automatability import classify
@@ -951,7 +980,7 @@ async def generate_test(
         suite_id = _create_suite_and_run(
             db, name=name, application_id=application_id,
             device_id=device_id, source="NL_GENERATE", tests=[test],
-            release_id=release_id,
+            release_id=release_id, sprint_id=sprint_id,
         )
 
     return {
@@ -1029,15 +1058,15 @@ def _autorun_possible(device_id: Optional[int]) -> bool:
 
 def _create_suite_and_run(
     db: Session, name: str, application_id: Optional[int], device_id: Optional[int], source: str, tests: List[MobileTest],
-    release_id: Optional[str] = None,
+    release_id: Optional[str] = None, sprint_id: Optional[str] = None,
 ) -> int:
     """Groups already-created tests into a suite and kicks off run_suite() in
     the background. Shared by every bulk/auto-run creation path so 'upload
     tests, they just run, grouped in the dashboard' behaves identically no
     matter which upload format got them there. `device_id` may be None when
     EMULATOR_AUTO_START is on — run_suite() provisions an emulator itself.
-    `release_id` is optional and just passed through to run_suite, which
-    stamps it onto every execution the suite creates."""
+    `release_id`/`sprint_id` are optional and just passed through to
+    run_suite, which stamps them onto every execution the suite creates."""
     suite = MobileTestSuite(name=name, application_id=application_id, device_id=device_id, source=source)
     db.add(suite)
     db.commit()
@@ -1047,7 +1076,7 @@ def _create_suite_and_run(
     db.commit()
 
     from mobile.suite_engine import run_suite
-    threading.Thread(target=run_suite, args=(suite.id, release_id), daemon=True).start()
+    threading.Thread(target=run_suite, args=(suite.id, release_id, sprint_id), daemon=True).start()
     return suite.id
 
 
@@ -1164,6 +1193,7 @@ def create_execution(
         environment=payload.environment,
         status="QUEUED",
         release_uuid=payload.release_id,
+        sprint_uuid=payload.sprint_id,
         environment_snapshot={
             "execution_policy": policy.dict(),
             "data_set": payload.data_set or {},
@@ -1436,16 +1466,23 @@ def approve_healing(
     if record.status not in ("PENDING_APPROVAL", "REQUIRES_REVIEW"):
         raise HTTPException(409, f"Healing record is in status '{record.status}', not awaiting approval.")
 
-    # replacement_locator/candidate_locators are only ever populated when the
-    # engine itself found something — in which case AutoHeal already applied
-    # it automatically and this record would not still be REQUIRES_REVIEW.
-    # So in practice this branch is always empty here; the real fix source
-    # for a REQUIRES_REVIEW record is the locator a person supplies below.
-    approved_locator = record.replacement_locator or (
-        record.candidate_locators[0]["locator"] if record.candidate_locators else None
-    )
-    if not approved_locator and payload and payload.locator:
+    # A person-supplied locator always wins when given — this endpoint exists
+    # specifically for the case where AutoHeal's own candidates were not good
+    # enough to trust (that is what REQUIRES_REVIEW means), so silently
+    # preferring one of THOSE same candidates over what a reviewer explicitly
+    # typed would defeat the entire reason a human was asked to look. The
+    # `candidate_locators[0]` fallback below is a last resort for a caller
+    # that supplies no locator at all — it can now be genuinely non-empty
+    # (candidate scoring improvements mean a REQUIRES_REVIEW record can still
+    # carry ranked-but-below-floor candidates), so it is used only when there
+    # is truly nothing else to go on, never in preference to explicit input.
+    approved_locator = None
+    if payload and payload.locator:
         approved_locator = payload.locator.dict()
+    if not approved_locator:
+        approved_locator = record.replacement_locator or (
+            record.candidate_locators[0]["locator"] if record.candidate_locators else None
+        )
     if not approved_locator:
         raise HTTPException(422, "No candidate locator available. Supply one in `locator` to retry with it.")
 

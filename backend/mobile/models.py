@@ -207,6 +207,8 @@ class MobileExecution(Base):
     # written and read, never enforced as a real FK, since Release lives in
     # a different schema/codebase (backend-node/Supabase) than this table.
     release_uuid = Column(String(36), nullable=True)
+    # Same soft-reference pattern, for the web-side "Sprint" table's id.
+    sprint_uuid = Column(String(36), nullable=True)
 
     # Where in the suite's one continuous recording this execution's steps
     # actually happened — lets a per-test video be cut from the master
