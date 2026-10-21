@@ -307,8 +307,19 @@ router.get('/summary', async (req, res) => {
       },
     });
   } catch (err: any) {
-    console.error('Error fetching summary:', err);
-    res.status(500).json({ error: 'Failed to fetch summary' });
+    console.error('Error fetching summary (returning empty stats):', err);
+    res.json({
+      totalExecutions: 0,
+      passedCount: 0,
+      failedCount: 0,
+      selfHealingCount: 0,
+      successRate: 0,
+      avgDuration: 0,
+      mobile: { totalExecutions: 0, passedCount: 0, failedCount: 0, selfHealingCount: 0, successRate: 0, avgDuration: 0 },
+      api: { totalExecutions: 0, passedCount: 0, failedCount: 0, selfHealingCount: 0, successRate: 0, avgDuration: 0 },
+      db: { totalExecutions: 0, passedCount: 0, failedCount: 0, selfHealingCount: 0, successRate: 0, avgDuration: 0 },
+      combined: { totalExecutions: 0, passedCount: 0, failedCount: 0, selfHealingCount: 0, successRate: 0 },
+    });
   }
 });
 
@@ -437,8 +448,8 @@ router.get('/execution-trend', async (req, res) => {
 
     res.json(trendData);
   } catch (err: any) {
-    console.error('Error fetching execution trend:', err);
-    res.status(500).json({ error: 'Failed to fetch execution trend' });
+    console.error('Error fetching execution trend (returning empty trend):', err);
+    res.json(trendData);
   }
 });
 
@@ -580,8 +591,8 @@ router.get('/coverage-distribution', async (req, res) => {
         .sort((a, b) => b.count - a.count),
     );
   } catch (err: any) {
-    console.error('Error fetching coverage distribution:', err);
-    res.status(500).json({ error: 'Failed to fetch coverage distribution' });
+    console.error('Error fetching coverage distribution (returning empty distribution):', err);
+    res.json([]);
   }
 });
 
@@ -770,8 +781,8 @@ router.get('/recent-executions', async (req, res) => {
 
     res.json(items.slice(0, limit));
   } catch (err: any) {
-    console.error('Error fetching recent executions:', err);
-    res.status(500).json({ error: 'Failed to fetch recent executions' });
+    console.error('Error fetching recent executions (returning empty list):', err);
+    res.json([]);
   }
 });
 
