@@ -2,11 +2,14 @@ import { Router } from 'express';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { supabase } from '../utils/storage';
 import { isProjectOwned } from '../utils/traceabilityScope';
+import { buildReleaseReport } from './releases';
 import {
   aggregateTestCaseStatus,
   buildTestCaseTimeline,
   detectRegression,
   normalizeExecStatus,
+  normalizeMobileExecStatus,
+  normalizeApiDbExecStatus,
   ExecRowLite,
   ReleaseMeta,
   SprintMeta,
@@ -241,8 +244,17 @@ router.get('/:id/traceability', async (req: AuthRequest, res) => {
     if (sErr) throw sErr;
     const sprintIds = (sprints || []).map((s: any) => s.id);
 
-    // Assignments (for counts + new/carried) and executions (for status).
-    const [{ data: assignments, error: aErr }, { data: execs, error: eErr }] = await Promise.all([
+    // Assignments (for counts + new/carried), executions (for status), and
+    // mobile_executions (the Appium engine's own soft-referenced runs — see
+    // fetchMobileRuns in sprints.ts for why this is a plain filter rather
+    // than a join through ExecutionLog).
+    const [
+      { data: assignments, error: aErr },
+      { data: execs, error: eErr },
+      { data: mobileExecs, error: mErr },
+      { data: apiExecs, error: apiErr },
+      { data: dbExecs, error: dbErr },
+    ] = await Promise.all([
       sprintIds.length
         ? supabase.from('SprintTestCase').select('sprintId, testRunId, assignmentSource').in('sprintId', sprintIds)
         : Promise.resolve({ data: [], error: null } as any),
@@ -252,9 +264,58 @@ router.get('/:id/traceability', async (req: AuthRequest, res) => {
             .select('id, status, browser, createdAt, sprintId, releaseId, testRunId')
             .in('sprintId', sprintIds)
         : Promise.resolve({ data: [], error: null } as any),
+      sprintIds.length
+        ? supabase.from('mobile_executions').select('id, status, sprint_uuid').in('sprint_uuid', sprintIds)
+        : Promise.resolve({ data: [], error: null } as any),
+      sprintIds.length
+        ? supabase.from('ApiExecution').select('id, status, sprintId').in('sprintId', sprintIds)
+        : Promise.resolve({ data: [], error: null } as any),
+      sprintIds.length
+        ? supabase.from('DbTestExecution').select('id, status, sprintId').in('sprintId', sprintIds)
+        : Promise.resolve({ data: [], error: null } as any),
     ]);
     if (aErr) throw aErr;
     if (eErr) throw eErr;
+    if (mErr) throw mErr;
+    if (apiErr) throw apiErr;
+    if (dbErr) throw dbErr;
+
+    const mobileBySprint = new Map<string, any[]>();
+    for (const m of (mobileExecs || []) as any[]) {
+      (mobileBySprint.get(m.sprint_uuid) || mobileBySprint.set(m.sprint_uuid, []).get(m.sprint_uuid))!.push(m);
+    }
+    const summariseMobile = (sprintId: string) => {
+      const rows = mobileBySprint.get(sprintId) || [];
+      const s = { total: rows.length, passed: 0, failed: 0, running: 0, review: 0 };
+      for (const r of rows) {
+        const n = normalizeMobileExecStatus(r.status);
+        if (n === 'PASSED') s.passed++;
+        else if (n === 'FAILED') s.failed++;
+        else if (n === 'RUNNING') s.running++;
+        else s.review++;
+      }
+      return s;
+    };
+
+    const apiBySprint = new Map<string, any[]>();
+    for (const r of (apiExecs || []) as any[]) {
+      (apiBySprint.get(r.sprintId) || apiBySprint.set(r.sprintId, []).get(r.sprintId))!.push(r);
+    }
+    const dbBySprint = new Map<string, any[]>();
+    for (const r of (dbExecs || []) as any[]) {
+      (dbBySprint.get(r.sprintId) || dbBySprint.set(r.sprintId, []).get(r.sprintId))!.push(r);
+    }
+    const summariseApiDb = (bySprint: Map<string, any[]>, sprintId: string) => {
+      const rows = bySprint.get(sprintId) || [];
+      const s = { total: rows.length, passed: 0, failed: 0, running: 0 };
+      for (const r of rows) {
+        const n = normalizeApiDbExecStatus(r.status);
+        if (n === 'PASSED') s.passed++;
+        else if (n === 'FAILED') s.failed++;
+        else s.running++;
+      }
+      return s;
+    };
 
     // (sprintId|testRunId) -> exec rows, for per-assignment aggregation.
     const execByPair = new Map<string, ExecRowLite[]>();
@@ -344,6 +405,9 @@ router.get('/:id/traceability', async (req: AuthRequest, res) => {
         endDate: sprint.endDate,
         regressionCount: regressionBySprint.get(sprint.id) || 0,
         adHoc: summariseAdHoc(sprint.id),
+        mobile: summariseMobile(sprint.id),
+        api: summariseApiDb(apiBySprint, sprint.id),
+        db: summariseApiDb(dbBySprint, sprint.id),
         ...counts,
       };
     };
@@ -356,9 +420,16 @@ router.get('/:id/traceability', async (req: AuthRequest, res) => {
           acc.notRun += s.notRun; acc.regressionCount += s.regressionCount;
           acc.new += s.new; acc.carried += s.carried;
           acc.adHocTotal += s.adHoc.total; acc.adHocPassed += s.adHoc.passed; acc.adHocFailed += s.adHoc.failed;
+          acc.mobileTotal += s.mobile.total; acc.mobilePassed += s.mobile.passed; acc.mobileFailed += s.mobile.failed;
+          acc.apiTotal += s.api.total; acc.apiPassed += s.api.passed; acc.apiFailed += s.api.failed;
+          acc.dbTotal += s.db.total; acc.dbPassed += s.db.passed; acc.dbFailed += s.db.failed;
           return acc;
         },
-        { assigned: 0, passed: 0, failed: 0, notRun: 0, regressionCount: 0, new: 0, carried: 0, adHocTotal: 0, adHocPassed: 0, adHocFailed: 0 },
+        {
+          assigned: 0, passed: 0, failed: 0, notRun: 0, regressionCount: 0, new: 0, carried: 0,
+          adHocTotal: 0, adHocPassed: 0, adHocFailed: 0, mobileTotal: 0, mobilePassed: 0, mobileFailed: 0,
+          apiTotal: 0, apiPassed: 0, apiFailed: 0, dbTotal: 0, dbPassed: 0, dbFailed: 0,
+        },
       );
       return {
         id: rel.id,
@@ -377,6 +448,81 @@ router.get('/:id/traceability', async (req: AuthRequest, res) => {
   } catch (err: any) {
     console.error('Error building project traceability:', err);
     res.status(500).json({ error: 'Failed to build project traceability' });
+  }
+});
+
+// GET /api/v1/projects/:id/report
+// The full Project → Release → Sprint report: every release's report
+// (itself every sprint's report), built by looping buildReleaseReport() —
+// the same builder GET /releases/:id/report uses — over every release in
+// the project. This is the "one consolidated report for the whole product"
+// view; unlike /traceability above (counts only), this carries full
+// failure detail (steps, screenshots, self-heal events) for every failed
+// test case anywhere in the project, batched per sprint to stay cheap.
+router.get('/:id/report', async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    const projectId = req.params.id as string;
+    if (!(await isProjectOwned(userId, projectId))) {
+      return res.status(404).json({ error: 'Project not found.' });
+    }
+    const { data: project, error: pErr } = await supabase
+      .from('Project')
+      .select('id, name')
+      .eq('id', projectId)
+      .maybeSingle();
+    if (pErr) throw pErr;
+    if (!project) return res.status(404).json({ error: 'Project not found.' });
+
+    const { data: releases, error: rErr } = await supabase
+      .from('Release')
+      .select('*')
+      .eq('projectId', projectId)
+      .order('sequence', { ascending: true, nullsFirst: false })
+      .order('createdAt', { ascending: true });
+    if (rErr) throw rErr;
+
+    const releaseReports = await Promise.all(
+      (releases || []).map((release: any) => buildReleaseReport({ release, projectId })),
+    );
+
+    const totals = releaseReports.reduce(
+      (acc, r) => {
+        acc.assigned += r.totals.assigned;
+        acc.passed += r.totals.passed;
+        acc.failed += r.totals.failed;
+        acc.notRun += r.totals.notRun;
+        acc.adHocTotal += r.totals.adHocTotal;
+        acc.adHocPassed += r.totals.adHocPassed;
+        acc.adHocFailed += r.totals.adHocFailed;
+        acc.mobileTotal += r.totals.mobileTotal;
+        acc.mobilePassed += r.totals.mobilePassed;
+        acc.mobileFailed += r.totals.mobileFailed;
+        acc.apiTotal += r.totals.apiTotal;
+        acc.apiPassed += r.totals.apiPassed;
+        acc.apiFailed += r.totals.apiFailed;
+        acc.dbTotal += r.totals.dbTotal;
+        acc.dbPassed += r.totals.dbPassed;
+        acc.dbFailed += r.totals.dbFailed;
+        return acc;
+      },
+      {
+        assigned: 0, passed: 0, failed: 0, notRun: 0, adHocTotal: 0, adHocPassed: 0, adHocFailed: 0,
+        mobileTotal: 0, mobilePassed: 0, mobileFailed: 0,
+        apiTotal: 0, apiPassed: 0, apiFailed: 0, dbTotal: 0, dbPassed: 0, dbFailed: 0,
+      },
+    );
+
+    res.json({
+      project,
+      generatedAt: new Date().toISOString(),
+      releaseCount: releaseReports.length,
+      totals,
+      releases: releaseReports,
+    });
+  } catch (err: any) {
+    console.error('Error building project report:', err);
+    res.status(500).json({ error: 'Failed to build project report' });
   }
 });
 

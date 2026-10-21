@@ -16,7 +16,7 @@ import { resolveRunTraceability, TraceabilityError } from '../utils/traceability
  * `return` when this returns null. When no context is supplied it returns all
  * nulls and the run proceeds exactly as before.
  */
-async function resolveTraceOrRespond(req: AuthRequest, res: any) {
+export async function resolveTraceOrRespond(req: AuthRequest, res: any) {
   try {
     return await resolveRunTraceability(req.user?.id, {
       sprintId: req.body?.sprintId ?? req.body?.sprint_id,
@@ -31,11 +31,52 @@ async function resolveTraceOrRespond(req: AuthRequest, res: any) {
     throw e;
   }
 }
-const traceCols = (t: { sprintId: string | null; testRunId: string | null; releaseId: string | null }) => ({
+export const traceCols = (t: { sprintId: string | null; testRunId: string | null; releaseId: string | null }) => ({
   ...(t.releaseId ? { releaseId: t.releaseId } : {}),
   ...(t.sprintId ? { sprintId: t.sprintId } : {}),
   ...(t.testRunId ? { testRunId: t.testRunId } : {}),
 });
+
+/**
+ * Run-source metadata stamped onto ExecutionLog only when the run came from an
+ * automated trigger. Every existing/manual run leaves `source` undefined here,
+ * so this spreads to nothing and those rows are unaffected.
+ *
+ *   - CI pipeline call (routes/ci.ts): `{ branch, commitSha, prNumber }`
+ *     (no `provider`, or `provider: 'ci'`) -> triggeredBy = 'ci'.
+ *   - Jira Intake (services/jiraIntakeService.ts): `{ provider: 'jira',
+ *     issueKey, reporter, summary }` -> triggeredBy = 'jira' + the jiraSource*
+ *     columns added in migration 005.
+ */
+export const ciCols = (
+  source?:
+    | {
+        provider?: 'ci' | 'jira';
+        commitSha?: string;
+        branch?: string;
+        prNumber?: number | string;
+        issueKey?: string;
+        reporter?: string | null;
+        summary?: string | null;
+      }
+    | null,
+) => {
+  if (!source) return {};
+  if (source.provider === 'jira') {
+    return {
+      triggeredBy: 'jira',
+      ...(source.issueKey ? { jiraSourceIssueKey: String(source.issueKey) } : {}),
+      ...(source.reporter ? { jiraSourceReporter: String(source.reporter) } : {}),
+      ...(source.summary ? { jiraSourceSummary: String(source.summary) } : {}),
+    };
+  }
+  return {
+    triggeredBy: 'ci',
+    ...(source.commitSha ? { commitSha: String(source.commitSha) } : {}),
+    ...(source.branch ? { branch: String(source.branch) } : {}),
+    ...(source.prNumber != null ? { prNumber: String(source.prNumber) } : {}),
+  };
+};
 
 const upload = multer({ storage: multer.memoryStorage() });
 const router = Router();
@@ -301,7 +342,7 @@ router.post('/run-excel', upload.single('file'), async (req: AuthRequest, res) =
 
 // POST /api/v1/executions/run-multi-test
 router.post('/run-multi-test', async (req: AuthRequest, res) => {
-  const { test_name, base_url, steps, browsers, devices, project_id, suite_id, excel_testcase_ids, antiBot, test_type, release_id } = req.body;
+  const { test_name, base_url, steps, browsers, devices, project_id, suite_id, excel_testcase_ids, antiBot, test_type, release_id, source } = req.body;
 
   if (excel_testcase_ids && excel_testcase_ids.length > 0) {
      console.log('EXCEL_EXECUTION_REQUEST', req.body);
@@ -407,6 +448,7 @@ router.post('/run-multi-test', async (req: AuthRequest, res) => {
             // only makes sense for a single logical test, never a multi-row
             // Excel batch (Phase 5's /sprints/:id/run stamps testRunId per case).
             ...traceCols(isExcelBatch ? { ...trace, testRunId: null } : trace),
+            ...ciCols(source),
           })
           .select()
           .single();

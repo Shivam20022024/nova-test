@@ -3,6 +3,7 @@ import { supabase } from '../utils/storage';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { flowProducer, executionQueueName } from '../queue/executionWorker';
 import { isProjectOwned } from '../utils/traceabilityScope';
+import { resolveTraceOrRespond, traceCols } from './executions';
 import {
   buildTestCaseTimeline,
   detectRegression,
@@ -178,20 +179,25 @@ router.get('/:id/regression', async (req: AuthRequest, res) => {
 });
 
 // POST /api/v1/test-cases/:id/run
-// Runs ONE test case directly — no sprint, no release, no assignment change.
-// REUSES the exact execution path /sprints/:id/run uses: an ExecutionLog row
-// (status QUEUED) + a BullMQ child job carrying `steps`, so executionWorker
-// takes its explicit-steps branch and runs the saved plan through the
-// unchanged Playwright pipeline. The row carries testRunId but sprintId and
-// releaseId stay NULL, so it never touches any sprint's results.
+// Runs ONE test case directly. REUSES the exact execution path
+// /sprints/:id/run uses: an ExecutionLog row (status QUEUED) + a BullMQ child
+// job carrying `steps`, so executionWorker takes its explicit-steps branch
+// and runs the saved plan through the unchanged Playwright pipeline.
+// sprintId/releaseId are OPTIONAL here (same resolveRunTraceability contract
+// as /executions/run-multi-test and /autonomous/run) — the frontend's "Run
+// Test" modal requires picking both, but this endpoint itself still accepts
+// a bare run for any other caller.
 //
-// { browser?: string }   (default 'chromium')
+// { browser?: string, sprintId?: string, releaseId?: string (or snake_case) }
 router.post('/:id/run', async (req: AuthRequest, res) => {
   try {
     const scope = await resolveTestRunScope(req.user?.id, req.params.id as string);
     if (!scope) return res.status(404).json({ error: 'Test case not found.' });
 
     const tr = scope.testRun;
+
+    const trace = await resolveTraceOrRespond(req, res);
+    if (!trace) return;
 
     if (tr.suite?.type && tr.suite.type !== 'WEB') {
       return res.status(400).json({
@@ -238,9 +244,11 @@ router.post('/:id/run', async (req: AuthRequest, res) => {
         testName: tr.name,
         targetUrl,
         description: `Direct run: ${tr.name}`,
+        ...traceCols(trace),
+        // The test run being executed is always this one, regardless of
+        // whatever (if anything) resolveTraceOrRespond resolved a testRunId
+        // to — never let a body-supplied value override the URL param.
         testRunId: tr.id,
-        // sprintId / releaseId deliberately omitted — a direct run is not a
-        // sprint execution.
       })
       .select()
       .single();

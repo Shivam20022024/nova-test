@@ -21,6 +21,7 @@ import { ReportingAgent } from '../agents/ReportingAgent';
 import { OrchestratorAgent } from '../agents/OrchestratorAgent';
 import { ScenarioParserAgent } from '../agents/ScenarioParserAgent';
 import { JiraService } from '../services/JiraService';
+import { postRunResultToJira } from '../services/jiraIntakeService';
 
 // Local dev runs use a separate queue name so they can never dequeue/collide
 // with jobs on the production 'test-executions' queue (both potentially
@@ -193,10 +194,19 @@ export const initExecutionWorker = (io: any) => {
       const persistClearanceSession = async (reason: string) => {
         if (antiBotClearancePersisted || !antiBotClearanceKey || !sharedContext) return;
         try {
-          const state = await sharedContext.storageState();
-          await redisConnection.set(antiBotClearanceKey, JSON.stringify(state), 'EX', 1500);
+          const fullState = await sharedContext.storageState();
+          // Keep ONLY Cloudflare challenge-clearance cookies. Persisting the whole browser state
+          // also saved the app's login session, so every later run for the same target started
+          // already signed in and its login steps failed (no login form to fill).
+          const clearanceCookies = (fullState.cookies || []).filter((c: any) => /^(cf_clearance|__cf_bm|cf_chl)/i.test(c.name));
+          if (clearanceCookies.length === 0) {
+            antiBotClearancePersisted = true;
+            logMsg(`[AntiBot] No challenge-clearance cookies to persist (${reason}); not saving any session state.`);
+            return;
+          }
+          await redisConnection.set(antiBotClearanceKey, JSON.stringify({ cookies: clearanceCookies, origins: [] }), 'EX', 1500);
           antiBotClearancePersisted = true;
-          logMsg(`[AntiBot] Persisted challenge-clearance session for reuse (TTL 25m, ${reason}).`);
+          logMsg(`[AntiBot] Persisted challenge-clearance cookies only for reuse (TTL 25m, ${reason}).`);
         } catch (e: any) {
           logMsg(`[AntiBot] Could not persist clearance session: ${e?.message || e}`);
         }
@@ -392,6 +402,10 @@ export const initExecutionWorker = (io: any) => {
               enableAiEyes: job.data.features?.aiEyes || job.data.enableAiEyes || false,
               enableVisualBaseline: job.data.features?.visualBaseline || false,
               testName: job.data.testName,
+              // Safety guard options (utils/protectedActions.ts): extra never-click patterns for this run,
+              // and an explicit opt-out for throw-away accounts.
+              protectedActions: job.data.protectedActions,
+              allowProtectedActions: job.data.allowProtectedActions === true,
               sharedPage: sharedPage,
               targetUrl: job.data.targetUrl,
               credentials: (aggregatedExecResult as any).authMetadata || job.data.credentials,
@@ -561,6 +575,7 @@ export const initExecutionWorker = (io: any) => {
                   if (currentMode === 'STRICT_SCENARIO') {
                      // Phase: Pre-parse ALL scenarios
                      const scenarioParser = new ScenarioParserAgent(executionId);
+                     logMsg('Reading and structuring your scenarios...');
                      emit('agent_progress', { agent: 'ScenarioParserAgent', status: 'parsing_scenarios' });
                      const parseResult = await scenarioParser.parse(job.data.customScenario);
                      const allParsedScenarios = parseResult.scenarios;
@@ -570,8 +585,15 @@ export const initExecutionWorker = (io: any) => {
                      }
                      
                      logMsg(`[Telemetry] PARSED_SCENARIO_COUNT=${allParsedScenarios.length}`);
+                     // The AI-call / token / cost safety caps are sized for ONE scenario; a many-scenario run
+                     // legitimately needs proportionally more. Tell the budget guard how many scenarios this
+                     // run has (it scales the caps; still bounded).
+                     await redisConnection.set(`execution_stats:${executionId}:scenario_count`, String(allParsedScenarios.length), 'EX', 86400).catch(() => {});
                      
-                     const STRICT_BATCH_SIZE = Math.max(1, parseInt(process.env.STRICT_SCENARIO_BATCH_SIZE || '3', 10) || 3);
+                     // One scenario per batch by default: the AI plans a single scenario in seconds, so the browser
+                     // starts acting almost immediately (the live feed is never blank for minutes) and each scenario
+                     // is planned against the page as it really is after the previous one.
+                     const STRICT_BATCH_SIZE = Math.max(1, parseInt(process.env.STRICT_SCENARIO_BATCH_SIZE || '1', 10) || 1);
                      const batches: any[][] = [];
                      for (let i = 0; i < allParsedScenarios.length; i += STRICT_BATCH_SIZE) {
                          batches.push(allParsedScenarios.slice(i, i + STRICT_BATCH_SIZE));
@@ -584,6 +606,8 @@ export const initExecutionWorker = (io: any) => {
                      
                      for (let b = 0; b < batches.length; b++) {
                          logMsg(`[Telemetry] EXECUTION_BATCH_STARTED=${b+1}`);
+                         logMsg(`Planning scenario ${b+1} of ${batches.length}: ${(batches[b] || []).map((s: any) => s?.name).filter(Boolean).join(' | ')}`);
+                         emit('agent_progress', { agent: 'ScriptGenerationAgent', status: `planning_scenario_${b+1}_of_${batches.length}` });
 
                          // Post-auth DOM refresh: once the first batch has run, the shared page
                          // is deep inside the app (logged in, on a cart/checkout/etc. page). Feed
@@ -611,15 +635,40 @@ export const initExecutionWorker = (io: any) => {
                          logMsg(`[Telemetry] BATCH_CONTEXT_REUSED=true`);
                          logMsg(`[Telemetry] RELOGIN_TRIGGERED=false`);
                          
-                         const batchPlanResult = await orchestratorAgent.planStrictScenarioQA(
-                           job.data.targetUrl,
-                           logMsg,
-                           (agent: string, status: string) => emit('agent_progress', { agent, status }),
-                           { sharedPage, preDiscovered, customScenarioText: '', preParsedScenarios: batches[b]!, isContinuation: b > 0 }
-                         );
-                         
-                         if (!batchPlanResult.success) {
-                             throw new Error("Orchestrator failed to plan execution for batch " + (b+1) + ": " + batchPlanResult.error);
+                         // Plan THIS batch, retrying only this batch (not the whole run) on a transient failure
+                         // such as a partial/timed-out AI response. Restarting from batch 1 would repeat
+                         // everything already executed (and re-create the records it wrote).
+                         let batchPlanResult: any = null;
+                         let batchPlanError = '';
+                         const MAX_BATCH_PLAN_ATTEMPTS = 3;
+                         for (let planTry = 1; planTry <= MAX_BATCH_PLAN_ATTEMPTS; planTry++) {
+                           try {
+                             batchPlanResult = await orchestratorAgent.planStrictScenarioQA(
+                               job.data.targetUrl,
+                               logMsg,
+                               (agent: string, status: string) => emit('agent_progress', { agent, status }),
+                               { sharedPage, preDiscovered, customScenarioText: '', preParsedScenarios: batches[b]!, isContinuation: b > 0 }
+                             );
+                             if (batchPlanResult?.success) break;
+                             batchPlanError = String(batchPlanResult?.error || 'unknown');
+                           } catch (planErr: any) {
+                             batchPlanResult = null;
+                             batchPlanError = String(planErr?.message || planErr);
+                           }
+                           logMsg(`[Warning] Script generation for batch ${b+1} did not complete (attempt ${planTry}/${MAX_BATCH_PLAN_ATTEMPTS}): ${(batchPlanError.split('\n')[0] || '').slice(0, 200)}`);
+                         }
+
+                         if (!batchPlanResult?.success) {
+                             // Do not abandon the rest of the run: mark this batch's scenarios as failed
+                             // (not executed) and continue with the next batch.
+                             logMsg(`[Error] Batch ${b+1} could not be generated after ${MAX_BATCH_PLAN_ATTEMPTS} attempts; its scenarios are reported as FAILED (not executed). Continuing with the next batch.`);
+                             for (const sc of batches[b] || []) {
+                                 if (sc?.name) aggregatedExecResult.scenario_status[sc.name] = 'FAIL';
+                             }
+                             executedCount += (batches[b]?.length || 0);
+                             const failedInBatch = (batches[b] || []).length;
+                             logMsg(`[Telemetry] BATCH_EXECUTION_COMPLETED=${b+1} CONTRACT=${JSON.stringify({ batchId: b + 1, status: 'generation_failed', executedScenarioCount: 0, failedScenarioCount: failedInBatch })}`);
+                             continue;
                          }
                          logMsg(`[Telemetry] SCRIPT_BATCH_GENERATED=${b+1}`);
                          
@@ -633,16 +682,33 @@ export const initExecutionWorker = (io: any) => {
                            allExecutionPlans.push(...parsedBatchPlan);
                          } catch (e) {}
                          
-                         // 5-minute maximum per batch timeout
-                         const batchTimeoutMs = 5 * 60 * 1000;
+                         // Per-batch time limit scales with the amount of work in the batch (a 40-step batch
+                         // legitimately takes more than 5 minutes). Override with BATCH_TIMEOUT_MS.
+                         const batchActionCount = (() => { try { return JSON.parse(batchPlanResult.executionPlan || '[]').length; } catch { return 0; } })();
+                         const batchTimeoutMs = parseInt(process.env.BATCH_TIMEOUT_MS || '', 10) ||
+                             Math.min(40 * 60 * 1000, Math.max(5 * 60 * 1000, batchActionCount * 30 * 1000));
+                         let batchTimer: any;
                          const timeoutPromise = new Promise<never>((_, reject) => {
-                             setTimeout(() => reject(new Error('EXECUTION_BATCH_TIMEOUT')), batchTimeoutMs);
+                             batchTimer = setTimeout(() => reject(new Error('EXECUTION_BATCH_TIMEOUT')), batchTimeoutMs);
                          });
                          
-                         const batchExecResult = await Promise.race([
-                             executeScriptWithRetry(batchScriptCode),
-                             timeoutPromise
-                         ]);
+                         let batchExecResult: any;
+                         try {
+                             batchExecResult = await Promise.race([
+                                 executeScriptWithRetry(batchScriptCode),
+                                 timeoutPromise
+                             ]);
+                         } catch (batchErr: any) {
+                             if (!/EXECUTION_BATCH_TIMEOUT/.test(batchErr?.message || '')) throw batchErr;
+                             // A slow batch must not restart the whole run (that would repeat earlier batches).
+                             logMsg(`[Error] Batch ${b+1} exceeded its time limit (${Math.round(batchTimeoutMs / 60000)} min). Its scenarios are reported as FAILED; continuing with the next batch.`);
+                             for (const sc of batches[b] || []) {
+                                 if (sc?.name && aggregatedExecResult.scenario_status[sc.name] !== 'PASS') aggregatedExecResult.scenario_status[sc.name] = 'FAIL';
+                             }
+                             batchExecResult = null;
+                         } finally {
+                             clearTimeout(batchTimer);
+                         }
                          
                          if (batchExecResult && batchExecResult.scenario_status) {
                              Object.assign(aggregatedExecResult.scenario_status, batchExecResult.scenario_status);
@@ -881,8 +947,15 @@ export const initExecutionWorker = (io: any) => {
              else if (status === 'SKIPPED' || status === 'NOT_STARTED') { skipped_count++; }
            }
            
-           if (isApiMode && failed_count > 0) {
+           // The run's status must reflect its scenarios: any failed scenario => FAILED, for every
+           // run type (this used to be API-only, so web runs with failing scenarios were stored as
+           // COMPLETED and every dashboard counted them as passed).
+           if (failed_count > 0) {
              finalExecutionStatus = 'FAILED';
+           } else if (passed_count === 0 && skipped_count > 0) {
+             // Nothing passed and something was skipped (e.g. a protected action was refused):
+             // never present this as a success.
+             finalExecutionStatus = 'SKIPPED';
            }
 
            if (job.data.customScenario) {
@@ -1033,7 +1106,11 @@ export const initExecutionWorker = (io: any) => {
                .select('*, suite:TestSuite(*)')
                .eq('id', executionId)
                .maybeSingle();
-             if (finalDbState && finalDbState.suite) {
+             // Loop guard: a Jira-triggered run must NOT open a brand-new Jira
+             // bug on failure (bug -> run -> new bug -> run -> ...). Its result
+             // is instead posted as a comment on the ORIGINAL issue, in the
+             // finally block below (postRunResultToJira).
+             if (finalDbState && finalDbState.suite && finalDbState.triggeredBy !== 'jira') {
                  const { data: jiraIntegration } = await supabase
                    .from('JiraIntegration')
                    .select('*')
@@ -1225,6 +1302,42 @@ export const initExecutionWorker = (io: any) => {
         const failScriptGenerationStatus = (genFailedError && !playwrightRan) ? 'FAILED' : 'SUCCESS';
         const failPlaywrightExecutionStatus = playwrightRan ? 'STARTED' : 'NOT_STARTED';
 
+        // A run that is cut off part-way (budget cap, timeout, crash) must still report the scenarios it
+        // DID execute. Without a final EXECUTION_RESULT step the report cannot see any scenario names and
+        // collapses the whole run into one row. Record what we have, marking unfinished scenarios as failed.
+        try {
+          if (playwrightRan && !finalStepLogs.some((s: any) => s && s.action === 'EXECUTION_RESULT')) {
+            const partialStatus: Record<string, string> = { ...(aggregatedExecResult.scenario_status as any) };
+            for (const k of Object.keys(partialStatus)) {
+              if (partialStatus[k] === 'IN_PROGRESS') partialStatus[k] = 'FAIL';
+            }
+            const vals = Object.values(partialStatus);
+            finalStepLogs.push({
+              action: 'EXECUTION_RESULT',
+              status: 'FAILED',
+              time: new Date().toISOString(),
+              details: `Run ended early: ${String(err.message || err).slice(0, 160)}`,
+              value: JSON.stringify({
+                aborted: true,
+                abortReason: String(err.message || err).slice(0, 300),
+                accessibility: (aggregatedExecResult as any).accessibilityResults,
+                security: (aggregatedExecResult as any).securityResults,
+                scenario_status: partialStatus,
+                transcript: (aggregatedExecResult as any).transcriptEvents || [],
+                metrics: {
+                  requested_count: job.data.requested_count || vals.length,
+                  executed_count: vals.filter(v => v === 'PASS' || v === 'FAIL').length,
+                  passed_count: vals.filter(v => v === 'PASS').length,
+                  failed_count: vals.filter(v => v === 'FAIL').length,
+                  skipped_count: vals.filter(v => v === 'SKIPPED' || v === 'NOT_STARTED').length,
+                },
+              }),
+            });
+          }
+        } catch (partialErr) {
+          logMsg(`[Warning] Could not record partial scenario results: ${partialErr}`);
+        }
+
         try {
           const reportRes = await reportAgent.generateReport(executionId, {
             testName,
@@ -1329,7 +1442,9 @@ export const initExecutionWorker = (io: any) => {
         logMsg('[Telemetry] EXECUTION_TERMINATED');
 
         if (finalDbState) {
-           if (finalDbState.status === 'FAILED' && job.data.features?.autoJira) {
+           // Same loop guard as the block above — never auto-file a fresh bug
+           // for a run that a Jira bug itself triggered.
+           if (finalDbState.status === 'FAILED' && job.data.features?.autoJira && finalDbState.triggeredBy !== 'jira') {
              try {
                const { data: jiraIntegration } = await supabase
                  .from('JiraIntegration')
@@ -1460,9 +1575,23 @@ ${errorMsg}
              }
            }
 
-           emit('execution_completed', { 
-             executionId, 
-             status: finalDbState.status, 
+           // Jira Intake: if this run was triggered by a bug raised in Jira,
+           // post the outcome back as a comment on that issue (and add the
+           // 'novatest-tested' label). Fully best-effort — postRunResultToJira
+           // swallows its own errors; this try/catch is a second belt.
+           if (finalDbState.triggeredBy === 'jira') {
+             try {
+               logMsg('[Jira Intake] Posting run result back to the source Jira issue...');
+               await postRunResultToJira(executionId);
+               logMsg('[Jira Intake] Result posted.');
+             } catch (intakeErr: any) {
+               logMsg(`[Jira Intake] Post-back skipped: ${intakeErr?.message || intakeErr}`);
+             }
+           }
+
+           emit('execution_completed', {
+             executionId,
+             status: finalDbState.status,
              durationMs: finalDbState.durationMs || 0
              // Note: frontend only uses status and durationMs
            });
@@ -1472,7 +1601,9 @@ ${errorMsg}
     },
     { 
       connection: redisConnection, 
-      concurrency: 4,
+      // Runs that share one login/account can interfere when executed in parallel; set
+      // WORKER_CONCURRENCY=1 for login-bound suites. Default unchanged (4).
+      concurrency: Math.max(1, parseInt(process.env.WORKER_CONCURRENCY || '4', 10) || 4),
       lockDuration: 5 * 60 * 1000
     }
   );

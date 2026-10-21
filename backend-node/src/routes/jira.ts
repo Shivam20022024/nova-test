@@ -425,4 +425,110 @@ router.post('/create-from-mobile-execution/:id', async (req: AuthRequest, res) =
   }
 });
 
+// POST /api/v1/jira/create-from-api-execution/:id
+//
+// Mirrors create-from-mobile-execution above, but reads ApiExecution — its
+// own table (see routes/apiTests.ts), not ExecutionLog. Simpler than both
+// existing paths: projectId is already inline on the row, no join needed.
+// No screenshot attachment — an API test has no browser to capture from.
+router.post('/create-from-api-execution/:id', async (req: AuthRequest, res) => {
+  try {
+    const id = req.params.id as string;
+    const { data: execution, error: execErr } = await supabase.from('ApiExecution').select('*').eq('id', id).maybeSingle();
+    if (execErr) throw execErr;
+    if (!execution) return res.status(404).json({ error: 'API execution not found' });
+
+    const { data: jiraIntegration } = await supabase.from('JiraIntegration').select('*').eq('projectId', execution.projectId).maybeSingle();
+
+    const envUrl = process.env.JIRA_BASE_URL;
+    const envEmail = process.env.JIRA_EMAIL;
+    const envToken = process.env.JIRA_API_TOKEN;
+    const envProject = process.env.JIRA_PROJECT_KEY;
+
+    const useDb = jiraIntegration && jiraIntegration.isActive;
+    const useEnv = !useDb && envUrl && envEmail && envToken && envProject;
+
+    if (!useDb && !useEnv) {
+      return res.status(400).json({ error: 'Jira integration is not configured or active for this project.' });
+    }
+
+    const jiraService = new JiraService(
+      useDb ? jiraIntegration.baseUrl : envUrl!,
+      useDb ? jiraIntegration.email : envEmail!,
+      useDb ? jiraIntegration.apiToken : envToken!,
+      useDb ? jiraIntegration.projectKey : envProject!,
+      useDb ? jiraIntegration.issueType : 'Bug'
+    );
+
+    const summary = `[NovaTest AI] API test bug: ${execution.name} failed`;
+    const reportUrl = `${req.headers.origin || 'http://localhost:5173'}/app/api-testing/executions/${id}/report`;
+    const adfContent = JiraService.generateApiBugReportAdf(execution, reportUrl);
+
+    const result = await jiraService.createIssue(summary, adfContent);
+    if (!result) return res.status(500).json({ error: 'Failed to create Jira issue via Jira API.' });
+
+    const { error: updateErr } = await supabase
+      .from('ApiExecution')
+      .update({ jiraTicketId: result.key, jiraTicketUrl: result.url, jiraSyncTimestamp: new Date().toISOString() })
+      .eq('id', id);
+    if (updateErr) console.error('[JiraRoute] Failed to persist API execution Jira ticket link:', updateErr);
+
+    return res.json({ key: result.key, url: result.url });
+  } catch (err: any) {
+    console.error('[JiraRoute] Failed to create API test Jira bug:', err);
+    res.status(500).json({ error: err.message || 'Failed to file Jira bug' });
+  }
+});
+
+// POST /api/v1/jira/create-from-db-execution/:id
+// Same pattern as create-from-api-execution above, for DbTestExecution.
+router.post('/create-from-db-execution/:id', async (req: AuthRequest, res) => {
+  try {
+    const id = req.params.id as string;
+    const { data: execution, error: execErr } = await supabase.from('DbTestExecution').select('*').eq('id', id).maybeSingle();
+    if (execErr) throw execErr;
+    if (!execution) return res.status(404).json({ error: 'Database test execution not found' });
+
+    const { data: jiraIntegration } = await supabase.from('JiraIntegration').select('*').eq('projectId', execution.projectId).maybeSingle();
+
+    const envUrl = process.env.JIRA_BASE_URL;
+    const envEmail = process.env.JIRA_EMAIL;
+    const envToken = process.env.JIRA_API_TOKEN;
+    const envProject = process.env.JIRA_PROJECT_KEY;
+
+    const useDb = jiraIntegration && jiraIntegration.isActive;
+    const useEnv = !useDb && envUrl && envEmail && envToken && envProject;
+
+    if (!useDb && !useEnv) {
+      return res.status(400).json({ error: 'Jira integration is not configured or active for this project.' });
+    }
+
+    const jiraService = new JiraService(
+      useDb ? jiraIntegration.baseUrl : envUrl!,
+      useDb ? jiraIntegration.email : envEmail!,
+      useDb ? jiraIntegration.apiToken : envToken!,
+      useDb ? jiraIntegration.projectKey : envProject!,
+      useDb ? jiraIntegration.issueType : 'Bug'
+    );
+
+    const summary = `[NovaTest AI] Database test bug: ${execution.name} failed`;
+    const reportUrl = `${req.headers.origin || 'http://localhost:5173'}/app/db-testing/executions/${id}/report`;
+    const adfContent = JiraService.generateDbBugReportAdf(execution, reportUrl);
+
+    const result = await jiraService.createIssue(summary, adfContent);
+    if (!result) return res.status(500).json({ error: 'Failed to create Jira issue via Jira API.' });
+
+    const { error: updateErr } = await supabase
+      .from('DbTestExecution')
+      .update({ jiraTicketId: result.key, jiraTicketUrl: result.url, jiraSyncTimestamp: new Date().toISOString() })
+      .eq('id', id);
+    if (updateErr) console.error('[JiraRoute] Failed to persist DB execution Jira ticket link:', updateErr);
+
+    return res.json({ key: result.key, url: result.url });
+  } catch (err: any) {
+    console.error('[JiraRoute] Failed to create database test Jira bug:', err);
+    res.status(500).json({ error: err.message || 'Failed to file Jira bug' });
+  }
+});
+
 export default router;

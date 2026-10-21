@@ -39,7 +39,8 @@ export const getModel = (modelType: 'planner' | 'cheap' = 'planner') => {
     modelName,
     temperature: 0.2,
     openAIApiKey: process.env.OPENAI_API_KEY || 'mock-key',
-    timeout: 30000,
+    // Long scenarios produce large JSON plans; 30s is too short for them. Override with LLM_TIMEOUT_MS.
+    timeout: parseInt(process.env.LLM_TIMEOUT_MS || '120000', 10),
     maxRetries: 1
   });
 };
@@ -72,27 +73,36 @@ export const invokeWithRetry = async (
     const callCountKey = `execution_stats:${context.executionId}:llm_calls`;
     const tokenCountKey = `execution_stats:${context.executionId}:total_tokens`;
     
-    const [callsStr, tokensStr] = await Promise.all([
+    const [callsStr, tokensStr, scenarioCountStr] = await Promise.all([
       redisConnection.get(callCountKey),
-      redisConnection.get(tokenCountKey)
+      redisConnection.get(tokenCountKey),
+      redisConnection.get(`execution_stats:${context.executionId}:scenario_count`)
     ]);
-    
+
     const calls = callsStr ? parseInt(callsStr, 10) : 0;
     const tokens = tokensStr ? parseInt(tokensStr, 10) : 0;
     const estimatedCost = (tokens / 1000000) * COST_PER_MILLION_TOKENS;
 
+    // The base caps are sized for a single scenario. A run with N scenarios gets the caps multiplied by
+    // ceil(N / 5) (so 21 scenarios => x5), bounded at x10, instead of aborting half-way through.
+    const scenarioCount = scenarioCountStr ? parseInt(scenarioCountStr, 10) : 1;
+    const budgetScale = Math.min(10, Math.max(1, Math.ceil((Number.isFinite(scenarioCount) ? scenarioCount : 1) / 5)));
+    const callCap = MAX_LLM_CALLS * budgetScale;
+    const tokenCap = MAX_TOTAL_TOKENS * budgetScale;
+    const costCap = MAX_ESTIMATED_COST * budgetScale;
+
     let thresholdBreached = false;
     let breachReason = "";
 
-    if (calls >= MAX_LLM_CALLS) {
+    if (calls >= callCap) {
       thresholdBreached = true;
-      breachReason = `LLM_CALL_COUNT (${calls}) >= MAX_LLM_CALLS (${MAX_LLM_CALLS})`;
-    } else if (tokens >= MAX_TOTAL_TOKENS) {
+      breachReason = `LLM_CALL_COUNT (${calls}) >= MAX_LLM_CALLS (${callCap} = ${MAX_LLM_CALLS} x ${budgetScale})`;
+    } else if (tokens >= tokenCap) {
       thresholdBreached = true;
-      breachReason = `TOTAL_TOKENS (${tokens}) >= MAX_TOTAL_TOKENS (${MAX_TOTAL_TOKENS})`;
-    } else if (estimatedCost >= MAX_ESTIMATED_COST) {
+      breachReason = `TOTAL_TOKENS (${tokens}) >= MAX_TOTAL_TOKENS (${tokenCap})`;
+    } else if (estimatedCost >= costCap) {
       thresholdBreached = true;
-      breachReason = `ESTIMATED_COST ($${estimatedCost.toFixed(4)}) >= MAX_ESTIMATED_COST ($${MAX_ESTIMATED_COST})`;
+      breachReason = `ESTIMATED_COST ($${estimatedCost.toFixed(4)}) >= MAX_ESTIMATED_COST ($${costCap})`;
     }
 
     if (thresholdBreached) {

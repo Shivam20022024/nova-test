@@ -1,6 +1,7 @@
 import { chromium } from 'playwright';
 import { getModel, invokeWithRetry } from './llm';
 import { z } from 'zod';
+import { detectAntiBotInterstitial } from '../utils/antiBotInterstitial';
 
 const flowSchema = z.object({
   flows: z.array(z.object({
@@ -19,15 +20,23 @@ const flowSchema = z.object({
 
 export async function extractCompactDom(page: any) {
   return await page.evaluate(() => {
-    const result: { [key: string]: string[], forms: string[], buttons: string[], inputs: string[], links: string[], navigation: string[], products: string[], headings: string[], labels: string[], cart: string[], checkout: string[] } = {
-      forms: [], buttons: [], inputs: [], links: [], headings: [], labels: [], navigation: [], products: [], cart: [], checkout: []
+    const result: { [key: string]: string[], dropdowns: string[], forms: string[], buttons: string[], inputs: string[], links: string[], navigation: string[], products: string[], headings: string[], labels: string[], cart: string[], checkout: string[] } = {
+      dropdowns: [], forms: [], buttons: [], inputs: [], links: [], headings: [], labels: [], navigation: [], products: [], cart: [], checkout: []
     };
     
     const rawSize = document.body.innerHTML.length;
 
+    // IMPORTANT: work on a detached CLONE. This used to delete styles/svgs/hidden nodes/comments straight
+    // from the live page, which corrupts React/Vue-managed DOM ("insertBefore ... is not a child of this
+    // node") and crashed the application under test into a blank page mid-run.
+    const root = document.documentElement.cloneNode(true) as HTMLElement;
+
     const extractNode = (el: HTMLElement) => {
       const tag = el.tagName.toLowerCase();
-      const id = el.id ? `#${el.id}` : '';
+      // Framework-generated ids (React useId "_r_21_", ":r1:", radix-*, headlessui-*, ember123...) change on
+      // every render, so a selector built on them breaks the next run. Never offer them.
+      const isGeneratedId = !!el.id && /^(_r_|:r|radix-|headlessui-|react-aria|ember\d|mui-\d|rc[-_]|ng-)/i.test(el.id);
+      const id = el.id && !isGeneratedId ? `#${el.id}` : '';
       const text = el.innerText?.trim()?.substring(0, 40).replace(/\n/g, ' ') || (el as HTMLInputElement).placeholder || (el as HTMLInputElement).value || '';
       const typeAttr = el.getAttribute('type') ? ` type="${el.getAttribute('type')}"` : '';
       const nameAttr = el.getAttribute('name') ? ` name="${el.getAttribute('name')}"` : '';
@@ -46,36 +55,47 @@ export async function extractCompactDom(page: any) {
     };
 
     const badSelectors = 'script, style, noscript, svg, iframe, footer, .tracking, .analytics, [hidden], [style*="display: none"], [style*="display:none"], link[rel="preload"], meta';
-    document.querySelectorAll(badSelectors).forEach(node => {
+    root.querySelectorAll(badSelectors).forEach(node => {
        try { node.remove(); } catch (e) {}
     });
     
-    const iterator = document.createNodeIterator(document, NodeFilter.SHOW_COMMENT, null);
+    const iterator = document.createNodeIterator(root, NodeFilter.SHOW_COMMENT, null);
     let currentNode;
     while (currentNode = iterator.nextNode()) {
         try { currentNode.parentNode?.removeChild(currentNode); } catch(e) {}
     }
 
-    document.querySelectorAll('form').forEach(el => result.forms.push(extractNode(el as HTMLElement)));
-    document.querySelectorAll('button, [role="button"]').forEach(el => result.buttons.push(extractNode(el as HTMLElement)));
-    document.querySelectorAll('input, select, textarea').forEach(el => {
+    root.querySelectorAll('form').forEach(el => result.forms.push(extractNode(el as HTMLElement)));
+    root.querySelectorAll('button, [role="button"]').forEach(el => result.buttons.push(extractNode(el as HTMLElement)));
+    root.querySelectorAll('input, select, textarea').forEach(el => {
       if (el.getAttribute('type') !== 'hidden') result.inputs.push(extractNode(el as HTMLElement));
     });
-    document.querySelectorAll('a').forEach(el => {
+    root.querySelectorAll('a').forEach(el => {
        const nodeStr = extractNode(el as HTMLElement);
        if (result.links.length < 20) result.links.push(nodeStr);
     });
-    document.querySelectorAll('h1, h2, h3, h4, h5, h6, [role="heading"]').forEach(el => result.headings.push(extractNode(el as HTMLElement)));
-    document.querySelectorAll('label').forEach(el => result.labels.push(extractNode(el as HTMLElement)));
-    document.querySelectorAll('nav, .menu, [role="navigation"]').forEach(el => result.navigation.push(extractNode(el as HTMLElement)));
+    root.querySelectorAll('h1, h2, h3, h4, h5, h6, [role="heading"]').forEach(el => result.headings.push(extractNode(el as HTMLElement)));
+    root.querySelectorAll('label').forEach(el => result.labels.push(extractNode(el as HTMLElement)));
+    // Custom dropdowns (role=combobox / aria-haspopup): list them with their accessible name AND visible value, so
+    // the generator can target them instead of guessing a name from the visible text.
+    result.dropdowns = [];
+    root.querySelectorAll('[role="combobox"], [aria-haspopup="listbox"], select').forEach(el => {
+      const e = el as HTMLElement;
+      const labelledBy = e.getAttribute('aria-labelledby');
+      const labelText = labelledBy ? labelledBy.split(' ').map(id => root.querySelector('#' + id)?.textContent?.trim() || '').join(' ').trim() : '';
+      const name = e.getAttribute('aria-label') || labelText || '';
+      const value = (e.textContent || '').trim().substring(0, 30);
+      result.dropdowns.push(`<dropdown role="${e.getAttribute('role') || e.tagName.toLowerCase()}" name="${name}" value="${value}"/>`);
+    });
+    root.querySelectorAll('nav, .menu, [role="navigation"]').forEach(el => result.navigation.push(extractNode(el as HTMLElement)));
     
-    const products = document.querySelectorAll('.product-card, .product, [data-testid*="product"]');
+    const products = root.querySelectorAll('.product-card, .product, [data-testid*="product"]');
     products.forEach((el, index) => {
       if (index < 5) result.products.push(extractNode(el as HTMLElement));
     });
 
-    document.querySelectorAll('.cart, [data-testid*="cart"], [aria-label*="cart"]').forEach(el => result.cart.push(extractNode(el as HTMLElement)));
-    document.querySelectorAll('.checkout, [data-testid*="checkout"], [aria-label*="checkout"]').forEach(el => result.checkout.push(extractNode(el as HTMLElement)));
+    root.querySelectorAll('.cart, [data-testid*="cart"], [aria-label*="cart"]').forEach(el => result.cart.push(extractNode(el as HTMLElement)));
+    root.querySelectorAll('.checkout, [data-testid*="checkout"], [aria-label*="checkout"]').forEach(el => result.checkout.push(extractNode(el as HTMLElement)));
     
     for (const key of Object.keys(result)) {
        result[key] = Array.from(new Set(result[key] || []));
@@ -223,9 +243,11 @@ export class DiscoveryAgent {
           const currentUrlAfterLoad = page.url();
           const pageContent = await page.content();
           const pageContentLower = pageContent.toLowerCase();
-          if (currentUrlAfterLoad.includes('challenges.cloudflare.com') || 
-              pageContentLower.includes('verify you are human') || 
-              pageContentLower.includes('captcha') ||
+          // A page that merely embeds a Turnstile/CAPTCHA widget (e.g. a login form) is
+          // not a block; only a real challenge interstitial is.
+          const interstitial = await detectAntiBotInterstitial(page);
+          if (currentUrlAfterLoad.includes('challenges.cloudflare.com') ||
+              interstitial.light || interstitial.hard ||
               pageContentLower.includes('__challenge') ||
               pageContentLower.includes('access denied') ||
               pageContentLower.includes('bot telemetry')) {

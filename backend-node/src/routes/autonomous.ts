@@ -3,12 +3,13 @@ import { AuthRequest } from '../middleware/auth';
 import { supabase } from '../utils/storage';
 import { executionQueue, flowProducer, executionQueueName } from '../queue/executionWorker';
 import { resolveRunTraceability, TraceabilityError } from '../utils/traceabilityScope';
+import { ciCols } from './executions';
 
 const router = Router();
 
 // POST /api/v1/autonomous/run
 router.post('/run', async (req: AuthRequest, res) => {
-  const { targetUrl, credentials, depth, features, projectId, mode, customScenario, rawScenario, browsers, enableAiEyes, antiBot } = req.body;
+  const { targetUrl, credentials, depth, features, projectId, mode, customScenario, rawScenario, browsers, enableAiEyes, antiBot, source } = req.body;
 
   // Optional Sprint/Release/TestCase context. Absent -> all null, behaviour
   // identical to today (this route has no auth middleware and none is added).
@@ -111,6 +112,9 @@ router.post('/run', async (req: AuthRequest, res) => {
           ...(trace.releaseId ? { releaseId: trace.releaseId } : {}),
           ...(trace.sprintId ? { sprintId: trace.sprintId } : {}),
           ...(trace.testRunId ? { testRunId: trace.testRunId } : {}),
+          // Run-source tag. Absent on every UI-triggered autonomous run -> {}.
+          // Jira Intake passes { provider: 'jira', issueKey, reporter, summary }.
+          ...ciCols(source),
         })
         .select()
         .single();

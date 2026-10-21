@@ -129,6 +129,26 @@ export class ScenarioParserAgent {
     
     console.log(`[ScenarioParserAgent] PARSER_MODE=${parserMode}`);
 
+    // FAST, EXACT PATH (no AI call): text already written as "Scenario N: title" followed by one step per line
+    // needs no interpretation. Reading it directly starts the browser within seconds (the AI rewrite of a long
+    // suite took minutes with nothing on screen) and keeps every line - including each "Verify ..." - in the
+    // order it was written (the AI used to split checks away from the steps and push them to the end).
+    if (parserMode === 'EXACT_SCENARIO' && rawChunks && rawChunks.length > 0) {
+      const direct = rawChunks.map((chunk, idx) => {
+        const lines = chunk.split('\n').map(l => l.trim()).filter(Boolean);
+        const header = (lines[0] || '').replace(/^[-*]\s*/, '');
+        const steps = lines.slice(1);
+        return { id: idx + 1, name: header, steps, assertions: [] as string[], required: true, headerOk: /^(Scenario|Test\s*Case)\b[^:]*:\s*\S+/i.test(header) };
+      });
+      if (direct.length > 0 && direct.every(d => d.headerOk && d.steps.length > 0)) {
+        const scenarios = direct.map(({ headerOk, ...rest }) => rest);
+        console.log(`[ScenarioParserAgent] DIRECT_PARSE scenarios=${scenarios.length} (no AI call)`);
+        console.log(`[ScenarioParserAgent] SCENARIO_TITLES=${JSON.stringify(scenarios.map(s => s.name))}`);
+        return { scenarios, auth: authMetadata };
+      }
+      console.log(`[ScenarioParserAgent] DIRECT_PARSE not applicable (a chunk has no "Scenario N: title" header or no steps); using the AI parser.`);
+    }
+
     if (parserMode === 'EXACT_NUMBERED' || parserMode === 'EXACT_BULLET' || parserMode === 'EXACT_SCENARIO') {
       requestedCount = rawChunks!.length;
       console.log(`[ScenarioParserAgent] REQUESTED_SCENARIO_COUNT=${requestedCount}`);

@@ -3,6 +3,7 @@ import { supabase } from '../utils/storage';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { countExecutions, countMobileExecutions } from './dashboard';
 import { resolveReleaseScope } from '../utils/traceabilityScope';
+import { buildSprintReport } from './sprints';
 
 const router = Router();
 router.use(authenticate);
@@ -194,6 +195,79 @@ router.patch('/:id', async (req: AuthRequest, res) => {
   } catch (err: any) {
     console.error('Error updating release:', err);
     res.status(500).json({ error: 'Failed to update release' });
+  }
+});
+
+// GET /api/v1/releases/:id/report
+// The whole release's report: every sprint's summary + failure detail,
+// built by looping buildSprintReport() (the same function GET
+// /sprints/:id/report uses) over each sprint in the release, wrapped in a
+// release-level rollup. Ownership is checked ONCE here — each sprint's own
+// scope is constructed directly from the already-verified release, not
+// re-checked per sprint.
+export async function buildReleaseReport(scope: { release: any; projectId: string }) {
+  const { data: sprints, error } = await supabase
+    .from('Sprint')
+    .select('*')
+    .eq('releaseId', scope.release.id)
+    .order('sequence', { ascending: true })
+    .order('createdAt', { ascending: true });
+  if (error) throw error;
+
+  const sprintReports = await Promise.all(
+    (sprints || []).map((sprint: any) =>
+      buildSprintReport({ sprint, release: scope.release, projectId: scope.projectId }),
+    ),
+  );
+
+  const totals = sprintReports.reduce(
+    (acc, s) => {
+      acc.assigned += s.assignedTestCount;
+      acc.passed += s.passedTestCount;
+      acc.failed += s.failedTestCount;
+      acc.notRun += s.notRunTestCount;
+      acc.adHocTotal += s.adHocSummary.total;
+      acc.adHocPassed += s.adHocSummary.passed;
+      acc.adHocFailed += s.adHocSummary.failed;
+      acc.mobileTotal += s.mobileSummary.total;
+      acc.mobilePassed += s.mobileSummary.passed;
+      acc.mobileFailed += s.mobileSummary.failed;
+      acc.apiTotal += s.apiSummary.total;
+      acc.apiPassed += s.apiSummary.passed;
+      acc.apiFailed += s.apiSummary.failed;
+      acc.dbTotal += s.dbSummary.total;
+      acc.dbPassed += s.dbSummary.passed;
+      acc.dbFailed += s.dbSummary.failed;
+      return acc;
+    },
+    {
+      assigned: 0, passed: 0, failed: 0, notRun: 0, adHocTotal: 0, adHocPassed: 0, adHocFailed: 0,
+      mobileTotal: 0, mobilePassed: 0, mobileFailed: 0,
+      apiTotal: 0, apiPassed: 0, apiFailed: 0, dbTotal: 0, dbPassed: 0, dbFailed: 0,
+    },
+  );
+
+  return {
+    release: {
+      id: scope.release.id, name: scope.release.name, description: scope.release.description ?? null,
+      status: scope.release.status ?? 'PLANNED', sequence: scope.release.sequence, startDate: scope.release.startDate,
+      endDate: scope.release.endDate, projectId: scope.projectId,
+    },
+    sprintCount: sprintReports.length,
+    totals,
+    sprints: sprintReports,
+  };
+}
+
+router.get('/:id/report', async (req: AuthRequest, res) => {
+  try {
+    const scope = await resolveReleaseScope(req.user?.id, req.params.id as string);
+    if (!scope) return res.status(404).json({ error: 'Release not found.' });
+    const report = await buildReleaseReport(scope);
+    res.json(report);
+  } catch (err: any) {
+    console.error('Error building release report:', err);
+    res.status(500).json({ error: 'Failed to build release report' });
   }
 });
 

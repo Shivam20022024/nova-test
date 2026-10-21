@@ -23,6 +23,43 @@ export function normalizeExecStatus(raw: string | null | undefined): NormalizedE
   return 'SKIPPED';
 }
 
+const MOBILE_SUCCESS = new Set(['PASSED']);
+const MOBILE_FAILURE = new Set(['FAILED', 'INFRA_FAILURE', 'TIMEOUT', 'BLOCKED']);
+const MOBILE_IN_FLIGHT = new Set([
+  'CREATED', 'QUEUED', 'ALLOCATING_DEVICE', 'STARTING_APPIUM', 'STARTING_SESSION',
+  'RUNNING', 'HEALING', 'RETRYING', 'WAITING_APPROVAL', 'CLEANUP',
+]);
+
+export type NormalizedMobileExecStatus = 'PASSED' | 'FAILED' | 'RUNNING' | 'REVIEW';
+
+/**
+ * One raw mobile_executions.status -> a normalized bucket. Separate from
+ * normalizeExecStatus above because the mobile engine's status vocabulary is
+ * its own (CREATED/ALLOCATING_DEVICE/HEALING/REQUIRES_REVIEW/... — see
+ * backend/mobile/models.py's MobileExecution.status comment), not the web
+ * engine's. REQUIRES_REVIEW and CANCELLED land in REVIEW rather than FAILED —
+ * a self-heal that could not confirm itself is a "needs a human look" result,
+ * not a confirmed failure.
+ */
+export function normalizeMobileExecStatus(raw: string | null | undefined): NormalizedMobileExecStatus {
+  const v = String(raw || '').trim();
+  if (MOBILE_SUCCESS.has(v)) return 'PASSED';
+  if (MOBILE_FAILURE.has(v)) return 'FAILED';
+  if (MOBILE_IN_FLIGHT.has(v)) return 'RUNNING';
+  return 'REVIEW';
+}
+
+export type NormalizedApiDbExecStatus = 'PASSED' | 'FAILED' | 'RUNNING';
+
+/** ApiExecution/DbTestExecution only ever carry QUEUED|RUNNING|PASSED|FAILED
+ *  (see queue/apiDbTestWorker.ts) — no self-heal/review state to bucket. */
+export function normalizeApiDbExecStatus(raw: string | null | undefined): NormalizedApiDbExecStatus {
+  const v = String(raw || '').trim();
+  if (v === 'PASSED') return 'PASSED';
+  if (v === 'FAILED') return 'FAILED';
+  return 'RUNNING';
+}
+
 export type AggregatedStatus = 'PASSED' | 'FAILED' | 'PARTIAL' | 'RUNNING' | 'SKIPPED' | 'NOT_RUN';
 
 export interface ExecRowLite {

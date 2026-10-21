@@ -10,6 +10,22 @@ import { validateSelector as validateSelectorDOM } from './selectorValidator';
 import { supabase } from '../utils/storage'; // Assumes storage.ts exports a configured Supabase client
 import { ChallengeSolverAgent } from './ChallengeSolverAgent';
 import { humanMoveToLocator, humanType, warmUp } from '../utils/humanize';
+import { detectAntiBotInterstitial } from '../utils/antiBotInterstitial';
+import { findDeterministicFallback } from '../utils/selectorFallback';
+import { checkProtectedAction } from '../utils/protectedActions';
+import { pickBestMatch } from '../utils/elementRanking';
+import { isCustomDropdown, chooseCustomOption } from '../utils/customDropdown';
+import { dismissBlockingOverlay, dismissBlockingOverlayForStep } from '../utils/overlayDismiss';
+import { extractIntentPhrases, checkIntentPhrases, isConditionalIntent, isNegatedIntent, checkPhrasesAbsent } from '../utils/assertionIntent';
+
+// Failure screenshots are saved per failure. Step numbers restart for every scenario, so the file name also
+// carries a running per-execution counter; otherwise each scenario's failure overwrote the previous one.
+const failShotCounters = new Map<string, number>();
+function nextFailShot(executionId: string): number {
+  const n = (failShotCounters.get(executionId) || 0) + 1;
+  failShotCounters.set(executionId, n);
+  return n;
+}
 
 export class ExecutionAgent {
   async executeScript(
@@ -135,8 +151,21 @@ export class ExecutionAgent {
     let accessibilityResults: any = null;
     let securityResults: any = null;
 
+    // Per-scenario tally of verification steps, so a scenario whose checks never actually ran
+    // (all skipped/unresolved) is not reported as passed.
+    let currentScenarioName: string | undefined;
+    const assertionTally: Record<string, { passed: number; skipped: number; failed: number }> = {};
     const addStep = (action: string, status: string, durationMs?: number, details?: string, value?: string, rawSelector?: string) => {
+      if (currentScenarioName && /^assert/i.test(action)) {
+        const t = (assertionTally[currentScenarioName] ||= { passed: 0, skipped: 0, failed: 0 });
+        if (status === 'PASSED') t.passed++;
+        else if (status === 'SKIPPED') t.skipped++;
+        else if (status === 'FAILED') t.failed++;
+      }
       const step: any = { action, status, time: new Date().toISOString() };
+      // Stamp every step with its scenario so reports can group by scenario even when the run is cut
+      // short and the final per-scenario summary is missing.
+      if (currentScenarioName) step.scenarioName = currentScenarioName;
       if (durationMs !== undefined) step.durationMs = durationMs;
       if (details !== undefined) step.details = details;
       if (value !== undefined) step.value = value;
@@ -267,6 +296,7 @@ export class ExecutionAgent {
         let chainCompromised = false;
 
       for (const action of actions) {
+         currentScenarioName = action.scenarioName || currentScenarioName;
          if (action.scenarioName) {
             if (failedScenarios.has(action.scenarioName) || skippedScenarios.has(action.scenarioName)) {
                continue;
@@ -305,12 +335,19 @@ export class ExecutionAgent {
         let attempts = 0;
         let successAction = false;
         let isUnsupported = false;
+        let skipReason: string | undefined;
+        // What NovaTest did on its own for this step (chose among duplicates, dismissed a dialog, used a
+        // fallback...). Appended to the step details so the report is its own audit trail.
+        let stepNote = '';
+        const noteStep = (m: string) => { stepNote += (stepNote ? '; ' : '') + m; emitLog('agent_log', m); };
         let details = action.selector || action.url || '';
         
         action.selector = resolveSelector(action.selector);
         
-        const getPlaywrightLocator = (page: any, sel: string) => {
+        // `all` returns every match instead of only the first (used to detect ambiguity).
+        const getPlaywrightLocator = (page: any, sel: string, all: boolean = false) => {
           if (!sel) return null;
+          const pickOne = (l: any) => (all ? l : l.first());
           // Frame targeting: when a step sets `frameSelector`, resolve
           // against that iframe's content instead of the top-level page.
           // Absent frameSelector (every existing test/action), `root` is
@@ -325,7 +362,7 @@ export class ExecutionAgent {
           const root = action.frameSelector ? page.frameLocator(action.frameSelector) : page;
           if (sel.startsWith('locator(') || sel.startsWith('getByRole(') || sel.startsWith('getByLabel(') || sel.startsWith('getByTestId(') || sel.startsWith('getByText(') || sel.startsWith('getByPlaceholder(')) {
              try {
-               return new Function('page', `return page.${sel}.first()`)(root);
+               return pickOne(new Function('page', `return page.${sel}`)(root));
              } catch (e: any) {
                if (e instanceof SyntaxError && e.message.includes('Invalid regular expression')) {
                   let sanitizedSel = sel;
@@ -341,7 +378,7 @@ export class ExecutionAgent {
                   });
                   if (sanitizedSel !== sel) {
                      try {
-                        return new Function('page', `return page.${sanitizedSel}.first()`)(root);
+                        return pickOne(new Function('page', `return page.${sanitizedSel}`)(root));
                      } catch (e2) {
                         console.warn(`[ExecutionAgent] Failed evaluating sanitized Playwright selector ${sanitizedSel}`, e2);
                      }
@@ -350,7 +387,7 @@ export class ExecutionAgent {
                console.warn(`[ExecutionAgent] Failed evaluating Playwright selector ${sel}`, e);
              }
           }
-          return root.locator(sel).first();
+          return pickOne(root.locator(sel));
         };
         
         const rawSelector = action.selector || action.url;
@@ -370,7 +407,11 @@ export class ExecutionAgent {
         
         const timeouts = [5000, 10000, 20000];
         while (!successAction && attempts < 3) {
-          const currentTimeout = timeouts[attempts] || 5000;
+          // Checks fail fast: waiting 5s, then 10s, then 20s for an element that is not there only makes
+          // runs slow (the page either has it or it does not). Interactions keep the longer ladder.
+          const currentTimeout = action.action.startsWith('assert')
+            ? Math.min(timeouts[attempts] || 5000, 4000)
+            : (timeouts[attempts] || 5000);
           
           const waitForLocatorAttached = async (loc: any, sel: string) => {
             if (!loc) {
@@ -387,9 +428,9 @@ export class ExecutionAgent {
           const runDomValidation = async (sel: string) => {
              if (!sel || sel === 'null') return;
              try {
-                await page.waitForLoadState('networkidle', { timeout: 3000 });
+                await page.waitForLoadState('networkidle', { timeout: 1500 });
              } catch (e) {}
-             await page.waitForTimeout(1000);
+             await page.waitForTimeout(250);
 
              const currentUrl = page.url();
              const currentDomSnapshot = await page.evaluate(() => document.body.innerHTML);
@@ -403,6 +444,25 @@ export class ExecutionAgent {
                  if (!action || !action.selector || action.selector === 'null' || !actions || actions.length === 0) {
                      emitLog('agent_log', `[SELECTOR_VALIDATION_FAILED] Guard: Invalid action or empty selector. Skipping regeneration.`);
                      throw new Error(`INVALID SELECTOR: ${validation.reason}`);
+                 }
+                 // Cheap, deterministic repair first: probe the live page for the obvious real
+                 // element (type=email, matching label/placeholder, button/link by name). Only
+                 // if nothing real matches do we spend an LLM call on a regenerated selector.
+                 // The page may simply not have finished rendering yet (slow single-page app under
+                 // load), so keep probing for a short while before concluding the element is absent.
+                 let fallbackSel: string | null = null;
+                 const fallbackDeadline = Date.now() + 20000;
+                 do {
+                     fallbackSel = await findDeterministicFallback(page, sel, action.action, getPlaywrightLocator);
+                     if (fallbackSel) break;
+                     await page.waitForTimeout(1000);
+                 } while (Date.now() < fallbackDeadline);
+                 if (fallbackSel) {
+                     emitLog('agent_log', `[DETERMINISTIC_FALLBACK]\nfailed=${sel}\nuse=${fallbackSel}`);
+                     stepNote += (stepNote ? '; ' : '') + `[Fallback] ${sel} not found; used ${fallbackSel}`;
+                     action.selector = fallbackSel;
+                     emitLog('agent_log', `[VALIDATED_SELECTOR_EXECUTION]\nselector=${fallbackSel}`);
+                     return;
                  }
                  emitLog('agent_log', `[SELECTOR_GENERATION_HALLUCINATION]\nselector=${sel}\nreason=Attribute not found in current DOM`);
                  emitLog('agent_log', `[DOM_SELECTOR_GENERATION]\nscenario=${action.scenarioName}\nstep=${action.action}\nintent=${action.assertion || action.selector}\ncurrentUrl=${currentUrl}\ndomSize=${currentDomSnapshot.length}`);
@@ -433,13 +493,8 @@ export class ExecutionAgent {
           };
 
           const checkForAntiBot = async () => {
-             const currentUrl = page.url();
-             const content = await page.content().catch(() => '');
-             const lowerContent = content.toLowerCase();
-             
-             const isLightweight = lowerContent.includes('just a moment...') || currentUrl.includes('challenges.cloudflare.com') || lowerContent.includes('checking your browser');
-             const isHardBlock = lowerContent.includes('performing security verification') || lowerContent.includes('cf-challenge') || lowerContent.includes('cf-chl-widget') || lowerContent.includes('turnstile') || lowerContent.includes('captcha');
-             
+             const { light: isLightweight, hard: isHardBlock } = await detectAntiBotInterstitial(page);
+
              if (isLightweight) {
                 emitLog('agent_log', 'Detected lightweight JS challenge. Waiting 7 seconds to resolve...');
                 await page.waitForTimeout(7000);
@@ -458,18 +513,41 @@ export class ExecutionAgent {
           };
           
           try {
-            if (['click', 'fill', 'select', 'check', 'assertText', 'assertVisible', 'hover'].includes(action.action)) {
+            if (['click', 'fill', 'select', 'check', 'assertText', 'assertVisible', 'assertEnabled', 'assertDisabled', 'hover'].includes(action.action)) {
                await checkForAntiBot();
+               // Clear an informational dialog (welcome tour, notice) BEFORE locating the target: while it is
+               // open the page behind it is aria-hidden, so role-based locators cannot see anything there.
+               await dismissBlockingOverlayForStep(page, `${action.selector || ''} ${action.assertion || ''}`, noteStep);
             }
 
             if (['click', 'fill', 'select'].includes(action.action) && action.selector) {
                await runDomValidation(action.selector);
-               const loc = getPlaywrightLocator(page, action.selector);
-               await waitForLocatorAttached(loc, action.selector);
+               let loc = getPlaywrightLocator(page, action.selector);
+               try {
+                 await waitForLocatorAttached(loc, action.selector);
+               } catch (notFound) {
+                 // The selector looked plausible but matches nothing on the live page. Before failing (or
+                 // paying for an LLM repair), probe for the real element - keep retrying briefly in case the
+                 // page is still rendering.
+                 let fb: string | null = null;
+                 const fbDeadline = Date.now() + 15000;
+                 do {
+                   fb = await findDeterministicFallback(page, action.selector, action.action, getPlaywrightLocator);
+                   if (fb) break;
+                   await page.waitForTimeout(1000);
+                 } while (Date.now() < fbDeadline);
+                 if (!fb) throw notFound;
+                 noteStep(`[Fallback] ${action.selector} not found; used ${fb}`);
+                 action.selector = fb;
+                 loc = getPlaywrightLocator(page, action.selector);
+                 await waitForLocatorAttached(loc, action.selector);
+               }
                const tagName = await loc.evaluate((el: any) => el.tagName.toLowerCase()).catch(() => '');
                const isContentEditable = await loc.evaluate((el: any) => el.isContentEditable).catch(() => false);
                
-               if (action.action === 'select' && tagName !== 'select') {
+               if (action.action === 'select' && tagName !== 'select' && await isCustomDropdown(loc)) {
+                  emitLog('agent_log', `[Custom dropdown] ${action.selector} is a custom dropdown (<${tagName}>); will open it and click the option.`);
+               } else if (action.action === 'select' && tagName !== 'select') {
                   emitLog('agent_log', `[Auto-Convert] Selector ${action.selector} is a <${tagName}>, not a <select>. Converting action 'select' to 'fill'.`);
                   action.action = 'fill';
                } else if (action.action === 'fill' && !['input', 'textarea'].includes(tagName) && !isContentEditable) {
@@ -486,11 +564,20 @@ export class ExecutionAgent {
                 try {
                   await page.waitForFunction(() => document.readyState === 'complete' || document.readyState === 'interactive', { timeout: 5000 }).catch(() => {});
                 } catch(e) {}
-                
+
+                // Single-page apps often paint a "Loading..." splash first and only render the
+                // real UI seconds later. Wait (best effort, capped) for something interactive to
+                // appear so the next step doesn't look for an element that isn't there yet.
+                await page.waitForSelector('input, button, textarea, select, a[href]', { state: 'visible', timeout: 12000 }).catch(() => {});
+                // ...and make sure we are not still looking at a bare "Loading..." splash.
+                await page.waitForFunction(
+                  () => !/^\s*loading/i.test((document.body?.innerText || '').trim()) || !!document.querySelector('input, textarea, select'),
+                  { timeout: 15000 },
+                ).catch(() => {});
+
                 if (injectSlowCrawl) await page.waitForTimeout(5000);
-                const currentUrlAfterLoad = page.url();
-                const pageContent = await page.content();
-                if (currentUrlAfterLoad.includes('challenges.cloudflare.com') || pageContent.toLowerCase().includes('verify you are human') || pageContent.toLowerCase().includes('captcha')) {
+                const gotoChallenge = await detectAntiBotInterstitial(page);
+                if (gotoChallenge.light || gotoChallenge.hard) {
                   const cleared = await challengeSolver.maybeSolve(page, solver).catch(() => false);
                   if (!cleared) throw new Error('BlockedByAntiBotError: {"vendor":"generic","type":"captcha"}');
                   emitLog('agent_log', '[AntiBot] Challenge cleared after navigation; continuing.');
@@ -512,9 +599,33 @@ export class ExecutionAgent {
                     throw new Error(`INVALID_ACTION_TARGET: Selector policy forbids text="Login". Required: button, #id, [data-testid], or role=button.`);
                 }
                 
-                const loc = getPlaywrightLocator(page, action.selector);
+                let loc = getPlaywrightLocator(page, action.selector);
                 await waitForLocatorAttached(loc, action.selector);
-                
+
+                // Ambiguity guard: several elements can match one name (a "Sign in" tab AND a submit
+                // button, hidden twins, controls behind an open dialog...). `.first()` silently picks the
+                // first in the DOM, so rank the candidates instead (see utils/elementRanking.ts).
+                try {
+                  const allMatches = getPlaywrightLocator(page, action.selector, true);
+                  const best = allMatches ? await pickBestMatch(allMatches) : null;
+                  if (best) {
+                    loc = allMatches.nth(best.index);
+                    noteStep(`[Ambiguous click] ${best.count} elements matched; chose #${best.index + 1} (${best.reason})`);
+                  }
+                } catch (_) { /* best effort - fall back to the first match */ }
+
+                await dismissBlockingOverlay(page, loc, noteStep);
+
+                // Safety guard: never click controls whose label is irreversible/account-destroying
+                // unless the run explicitly allows it (see utils/protectedActions.ts).
+                const clickLabel: string = await loc.evaluate((n: HTMLElement) => [n.getAttribute('aria-label'), n.getAttribute('title'), n.innerText, (n as HTMLInputElement).value].filter(Boolean).join(' ').replace(/s+/g, ' ').trim().slice(0, 200)).catch(() => '');
+                const protectedHit = checkProtectedAction(clickLabel, { protectedActions: options.protectedActions, allowProtectedActions: options.allowProtectedActions });
+                if (protectedHit) {
+                  skipReason = `Refused by safety policy: "${clickLabel}" ${protectedHit}. Not clicked. (Allow explicitly per run with allowProtectedActions.)`;
+                  isUnsupported = true;
+                  break;
+                }
+
                 const tagName = await loc.evaluate((node: HTMLElement) => node.tagName.toUpperCase()).catch(() => 'UNKNOWN');
                 const isClickable = await loc.evaluate((node: HTMLElement) => {
                    return ['BUTTON', 'A', 'INPUT', 'LABEL', 'SELECT'].includes(node.tagName.toUpperCase()) || 
@@ -592,9 +703,20 @@ export class ExecutionAgent {
                 }
                 
                 await runDomValidation(action.selector);
-                const loc = getPlaywrightLocator(page, action.selector);
+                let loc = getPlaywrightLocator(page, action.selector);
                 await waitForLocatorAttached(loc, action.selector);
-                
+
+                // Same ranking as click: avoid hidden twins / fields behind an open dialog.
+                try {
+                  const allMatches = getPlaywrightLocator(page, action.selector, true);
+                  const best = allMatches ? await pickBestMatch(allMatches) : null;
+                  if (best) {
+                    loc = allMatches.nth(best.index);
+                    noteStep(`[Ambiguous fill] ${best.count} elements matched; chose #${best.index + 1} (${best.reason})`);
+                  }
+                } catch (_) { /* best effort */ }
+                await dismissBlockingOverlay(page, loc, noteStep);
+
                 const tagName = await loc.evaluate((node: HTMLElement) => node.tagName.toUpperCase()).catch(() => 'UNKNOWN');
                 const isContentEditable = await loc.evaluate((node: HTMLElement) => node.isContentEditable).catch(() => false);
                 if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(tagName) && !isContentEditable) {
@@ -613,19 +735,38 @@ export class ExecutionAgent {
                   await page.waitForTimeout(1000 + Math.random() * 1000);
                 }
                 if (injectSlowCrawl) await page.waitForTimeout(3000);
+                // Credential tokens: the generator writes __USERNAME__ / __PASSWORD__ instead of inventing
+                // credentials. The real values come from the run (Test username / Test password boxes) and
+                // are substituted only here, so they never enter the saved plan or the step log.
+                const rawFill = String(action.value ?? '');
+                const usesCredToken = /__(USERNAME|EMAIL|PASSWORD)__/.test(rawFill);
+                const runCreds: any = options.credentials || {};
+                let fillValue = rawFill;
+                if (usesCredToken) {
+                  const needUser = /__(USERNAME|EMAIL)__/.test(rawFill) && !runCreds.username;
+                  const needPass = /__PASSWORD__/.test(rawFill) && !runCreds.password;
+                  if (needUser || needPass) {
+                    throw new Error('MISSING_CREDENTIALS: this step needs the ' + (needUser ? 'test username' : 'test password') + ', but none was provided for the run. Fill the Test username / Test password fields (or put the credentials in the scenario) - NovaTest will not invent them.');
+                  }
+                  fillValue = rawFill.replace(/__(USERNAME|EMAIL)__/g, runCreds.username ?? '').replace(/__PASSWORD__/g, runCreds.password ?? '');
+                }
+                const isSecretField = usesCredToken || (await loc.evaluate((el: any) => (el.getAttribute('type') || '').toLowerCase() === 'password').catch(() => false));
+
                 await loc.fill('', { timeout: currentTimeout }).catch(() => {});
                 if (humanize) {
                   if (page.mouse) { await humanMoveToLocator(page, loc); }
-                  await humanType(loc, action.value);
+                  await humanType(loc, fillValue);
                 } else {
-                  const typeDelay = Math.floor(Math.random() * (180 - 50 + 1) + 50);
-                  await loc.type(action.value, { delay: typeDelay, timeout: currentTimeout });
+                  // Natural typing speed for short text; fast for long text. The time limit grows with the text
+                  // length - a fixed 5s limit made any sentence over ~40 characters time out while typing.
+                  const typeDelay = fillValue.length > 30 ? 12 : Math.floor(Math.random() * (180 - 50 + 1) + 50);
+                  await loc.type(fillValue, { delay: typeDelay, timeout: Math.max(currentTimeout, fillValue.length * typeDelay + 5000) });
                 }
 
                 let verificationResult = undefined;
                 const actual = await loc.inputValue().catch(() => loc.evaluate((el: any) => el.value || el.innerText || '').catch(() => ''));
-                emitLog('telemetry', `TRACE_FILL_ACTUAL=${actual}`);
-                if (actual.trim() !== action.value.trim()) {
+                emitLog('telemetry', `TRACE_FILL_ACTUAL=${isSecretField ? '[hidden]' : actual}`);
+                if (actual.trim() !== fillValue.trim()) {
                    emitLog('telemetry', `TRACE_FILL_VERIFIED=false`);
                    throw new Error("FILL_VERIFICATION_FAILED: Field did not accept the expected value");
                 }
@@ -674,6 +815,65 @@ export class ExecutionAgent {
                 await loc.waitFor({ state: 'visible', timeout: currentTimeout });
                 break;
               }
+              case 'assertUrl': {
+                // Verify the current page address. `value`/`contains` is a plain substring or a /regex/.
+                // NOTE: the generator stores the natural-language intent in `contains`, so the expected
+                // address comes from `value` (or `url`, or a non-locator `selector`), never `contains`.
+                const selAsText = typeof action.selector === 'string' && !/^(getBy|locator\()/.test(action.selector) ? action.selector : '';
+                const want = String(action.value ?? action.url ?? selAsText ?? '').trim();
+                if (!want) throw new Error('assertUrl needs the expected URL text in value.');
+                // "/profile/edit" is a PATH, not a regex: only treat /.../flags as a regex when the flags are valid.
+                const rxm = /^\/(.+)\/([a-z]*)$/.exec(want);
+                const rx = rxm && /^[dgimsuvy]*$/.test(rxm[2] || '') ? rxm : null;
+                const matches = (u: string) => rx ? new RegExp(rx[1] as string, rx[2] || 'i').test(u) : u.toLowerCase().includes(want.toLowerCase());
+                try {
+                  await page.waitForURL((u: URL) => matches(u.toString()), { timeout: currentTimeout });
+                } catch {
+                  throw new Error(`Assertion failed: expected the page address to match "${want}", but it is "${page.url()}"`);
+                }
+                break;
+              }
+              case 'assertEnabled':
+              case 'assertDisabled': {
+                await runDomValidation(action.selector);
+                const loc = getPlaywrightLocator(page, action.selector);
+                await waitForLocatorAttached(loc, action.selector);
+                const wantEnabled = action.action === 'assertEnabled';
+                // An informational dialog (e.g. the welcome tour) must not distort a state check.
+                await dismissBlockingOverlay(page, loc, noteStep);
+                // Several controls can share one name (e.g. "Save" and "Save this message"): rank them like
+                // click/fill do, so the check is made on the right one.
+                let stateLoc = loc;
+                try {
+                  const allMatches = getPlaywrightLocator(page, action.selector, true);
+                  const best = allMatches ? await pickBestMatch(allMatches) : null;
+                  if (best) {
+                    stateLoc = allMatches.nth(best.index);
+                    noteStep(`[Ambiguous check] ${best.count} elements matched; chose #${best.index + 1} (${best.reason})`);
+                  }
+                } catch (_) { /* best effort */ }
+                const deadline = Date.now() + currentTimeout;
+                let ok = false;
+                while (Date.now() < deadline) {
+                  const enabled = await stateLoc.isEnabled().catch(() => false);
+                  if (enabled === wantEnabled) { ok = true; break; }
+                  await page.waitForTimeout(250);
+                }
+                if (!ok) throw new Error(`Assertion failed: expected ${action.selector} to be ${wantEnabled ? 'enabled' : 'disabled'}.`);
+                break;
+              }
+              case 'press': {
+                const key = String(action.key ?? action.value ?? '').trim();
+                if (!key) throw new Error('press needs a key name in value (e.g. Enter, Escape, Tab).');
+                if (action.selector) {
+                  const loc = getPlaywrightLocator(page, action.selector);
+                  await waitForLocatorAttached(loc, action.selector);
+                  await loc.press(key, { timeout: currentTimeout });
+                } else {
+                  await page.keyboard.press(key);
+                }
+                break;
+              }
               case 'assertNotVisible': {
                 const loc = getPlaywrightLocator(page, action.selector);
                 if (loc) {
@@ -692,7 +892,33 @@ export class ExecutionAgent {
                 
                 const tagName = await loc.evaluate((node: HTMLElement) => node.tagName.toUpperCase()).catch(() => 'UNKNOWN');
                 if (tagName !== 'SELECT') {
-                   throw new Error(`InvalidActionTargetError: Attempted select() on <${tagName}>. Must be SELECT.`);
+                   if (await isCustomDropdown(loc)) {
+                      await loc.waitFor({ state: 'visible', timeout: currentTimeout });
+                      const wantText = String(action.value ?? action.contains ?? '');
+                      try {
+                        const chosen = await chooseCustomOption(page, loc, wantText, currentTimeout);
+                        noteStep(`[Custom dropdown] chose "${chosen}"`);
+                      } catch (dropErr: any) {
+                        // The choice may not be a dropdown option at all but a radio / tab / segmented button
+                        // (e.g. a unit toggle). Try those by the option text before giving up.
+                        await page.keyboard.press('Escape').catch(() => {});
+                        const esc = wantText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        let picked = '';
+                        for (const role of ['radio', 'tab', 'button', 'menuitemradio']) {
+                          const cand = page.getByRole(role as any, { name: new RegExp(esc, 'i') });
+                          const cnt = await cand.count().catch(() => 0);
+                          for (let ci = 0; ci < cnt; ci++) {
+                            const el = cand.nth(ci);
+                            if (await el.isVisible().catch(() => false)) { await el.click({ timeout: currentTimeout }); picked = role; break; }
+                          }
+                          if (picked) break;
+                        }
+                        if (!picked) throw dropErr;
+                        noteStep(`[Choice] selected "${wantText}" as a ${picked}`);
+                      }
+                      break;
+                   }
+                   throw new Error(`InvalidActionTargetError: Attempted select() on <${tagName}>. Must be SELECT or a custom dropdown (role=combobox/listbox).`);
                 }
                 
                 await loc.scrollIntoViewIfNeeded();
@@ -749,14 +975,15 @@ export class ExecutionAgent {
                 scenario_status[action.scenarioName] = 'SKIPPED';
               }
               emitLog('telemetry', `ACTION_SKIPPED=${action.action}`);
-              addStep(action.action, 'SKIPPED', Date.now() - startTime, `Unsupported action type: ${action.action}`, action.value, rawSelector);
-              logTranscriptEvent(action.action, rawSelector, `Unsupported action type`, 'SKIPPED', action.scenarioName);
+              if (skipReason && action.scenarioName) { skippedScenarios.add(action.scenarioName); chainCompromised = true; }
+              addStep(action.action, 'SKIPPED', Date.now() - startTime, skipReason || `Unsupported action type: ${action.action}`, action.value, rawSelector);
+              logTranscriptEvent(action.action, rawSelector, skipReason || `Unsupported action type`, 'SKIPPED', action.scenarioName);
             } else {
               if (action.scenarioName) {
                 scenario_status[action.scenarioName] = 'PASS';
               }
               emitLog('telemetry', `ACTION_COMPLETED=${action.action}`);
-              addStep(action.action, 'PASSED', Date.now() - startTime, details, action.value, rawSelector);
+              addStep(action.action, 'PASSED', Date.now() - startTime, stepNote ? `${details} ${stepNote}` : details, action.value, rawSelector);
               logTranscriptEvent(action.action, rawSelector, action.value, 'SUCCESS', action.scenarioName);
             }
           } catch (err: any) {
@@ -779,6 +1006,51 @@ export class ExecutionAgent {
             }
             emitLog('healing', `Checking healing eligibility for step type: ${action.action}`);
             if (action.action.startsWith('assert')) {
+                // FAST PATH (no AI call, no long retries): when the step's own wording quotes the text to
+                // verify, look for that text directly in what the user can see. Present -> the check is
+                // satisfied; still absent after a short grace period -> a real failure with a precise reason.
+                if ((action.action === 'assertVisible' || action.action === 'assertText')
+                    && !action._intentPhraseTried && typeof action.assertion === 'string') {
+                  action._intentPhraseTried = true;
+                  const phrases = extractIntentPhrases(action.assertion);
+                  if (phrases.length > 0 && isNegatedIntent(action.assertion) && !isConditionalIntent(action.assertion)) {
+                    // "... is no longer visible" / "... is not shown": the quoted text must be ABSENT.
+                    const absent = await checkPhrasesAbsent(page, phrases, 4000);
+                    if (absent.found.length === 0) {
+                      successAction = true;
+                      if (action.scenarioName) scenario_status[action.scenarioName] = 'PASS';
+                      emitLog('telemetry', `ACTION_COMPLETED=${action.action}`);
+                      addStep(action.action, 'PASSED', Date.now() - startTime, `${details} [Verified absent from the page: ${phrases.map(p => `"${p}"`).join(', ')}]`, action.value, rawSelector);
+                      logTranscriptEvent(action.action, rawSelector, action.value, 'SUCCESS', action.scenarioName);
+                      break;
+                    }
+                    action._assertRegenTried = true;
+                    action._assertRoleRelaxTried = true;
+                    err.message = `Assertion failed: expected ${absent.found.map(p => `"${p}"`).join(', ')} to be absent, but it is still shown on the page.`;
+                  } else if (phrases.length > 0) {
+                    const check = await checkIntentPhrases(page, phrases, 3500);
+                    if (check.missing.length === 0) {
+                      successAction = true;
+                      if (action.scenarioName) scenario_status[action.scenarioName] = 'PASS';
+                      emitLog('telemetry', `ACTION_COMPLETED=${action.action}`);
+                      addStep(action.action, 'PASSED', Date.now() - startTime, `${details} [Verified from the page's visible text: ${check.found.map(p => `"${p}"`).join(', ')}]`, action.value, rawSelector);
+                      logTranscriptEvent(action.action, rawSelector, action.value, 'SUCCESS', action.scenarioName);
+                      break;
+                    }
+                    if (check.found.length === 0 && !isConditionalIntent(action.assertion)) {
+                      // Nothing it asked for is on the page: a real failure, and an AI selector rewrite
+                      // cannot conjure text that is not there. Fail now, with the reason.
+                      action._assertRegenTried = true;
+                      action._assertRoleRelaxTried = true;
+                      action._phrasesMissing = check.missing;
+                      err.message = `Assertion failed: the page does not show ${check.missing.map(p => `"${p}"`).join(', ')} (checked the visible text, placeholders and labels for ${3.5}s).`;
+                    } else if (check.found.length === 0) {
+                      // Conditional step ("If a ... is shown, ...") that did not apply: no AI call needed.
+                      action._assertRegenTried = true;
+                      action._assertRoleRelaxTried = true;
+                    }
+                  }
+                }
                 // Assertions are not eligible for SelfHealingAgent (it must not swap the
                 // asserted element for a different one). But a failed assertion is very
                 // often just a stale/guessed SELECTOR for the RIGHT element on a page
@@ -879,7 +1151,7 @@ export class ExecutionAgent {
                 //   - do NOT fail the scenario and do NOT compromise the chain
                 //     (a genuine app fault will surface on the following interaction
                 //      steps, which need real elements)
-                if (action.action === 'assertVisible' || action.action === 'assertText') {
+                if ((action.action === 'assertVisible' || action.action === 'assertText') && !action._phrasesMissing) {
                     // Guard: if the page is visibly an error / not-found page, this is a
                     // real failure, not an un-runnable check.
                     const errPage = await (async () => {
@@ -903,14 +1175,14 @@ export class ExecutionAgent {
                 emitLog('healing', `Healing Decision: REJECTED (Reason: Assertions are not eligible for healing)`);
 
                  try {
-                   const stepIndex = stepLogs.length + 1;
-                   const screenshotPath = `./temp/screenshots/${executionId}-failed-step-${stepIndex}.png`;
+                   const stepIndex = stepLogs.length + 1; const shotSeq = nextFailShot(executionId);
+                   const screenshotPath = `./temp/screenshots/${executionId}-failed-step-${stepIndex}-f${shotSeq}.png`;
                    await require('fs/promises').mkdir('./temp/screenshots', { recursive: true }).catch(() => {});
                    await page.screenshot({ path: screenshotPath, fullPage: true });
                    const fileData = await require('fs/promises').readFile(screenshotPath);
                    const { data, error } = await supabase.storage
                      .from('screenshots')
-                     .upload(`${executionId}-failed-step-${stepIndex}.png`, fileData, { contentType: 'image/png', upsert: true });
+                     .upload(`${executionId}-failed-step-${stepIndex}-f${shotSeq}.png`, fileData, { contentType: 'image/png', upsert: true });
                    if (!error && data) {
                      const { data: publicData } = supabase.storage.from('screenshots').getPublicUrl(data.path);
                      screenshotUrl = publicData.publicUrl;
@@ -999,14 +1271,14 @@ export class ExecutionAgent {
 
                  if (err.message.includes("Assertion failed") || err.message.includes("ASSERTION_FAILED")) {
                    try {
-                     const stepIndex = stepLogs.length + 1;
-                     const screenshotPath = `./temp/screenshots/${executionId}-failed-step-${stepIndex}.png`;
+                     const stepIndex = stepLogs.length + 1; const shotSeq = nextFailShot(executionId);
+                     const screenshotPath = `./temp/screenshots/${executionId}-failed-step-${stepIndex}-f${shotSeq}.png`;
                      await require('fs/promises').mkdir('./temp/screenshots', { recursive: true }).catch(() => {});
                      await page.screenshot({ path: screenshotPath, fullPage: true });
                      const fileData = await require('fs/promises').readFile(screenshotPath);
                      const { data, error } = await supabase.storage
                        .from('screenshots')
-                       .upload(`${executionId}-failed-step-${stepIndex}.png`, fileData, { contentType: 'image/png', upsert: true });
+                       .upload(`${executionId}-failed-step-${stepIndex}-f${shotSeq}.png`, fileData, { contentType: 'image/png', upsert: true });
                      if (!error && data) {
                        const { data: publicData } = supabase.storage.from('screenshots').getPublicUrl(data.path);
                        screenshotUrl = publicData.publicUrl;
@@ -1085,11 +1357,20 @@ export class ExecutionAgent {
         // Also any NOT_STARTED that didn't even have actions might be SKIPPED later, 
         // but if the entire execution plan finishes successfully, all generated scenarios passed.
         for (const scenario in scenario_status) {
-           if (scenario_status[scenario] === 'IN_PROGRESS') {
-              scenario_status[scenario] = 'PASS';
+           if (scenario_status[scenario] === 'IN_PROGRESS' || scenario_status[scenario] === 'PASS') {
+              const t = assertionTally[scenario];
+              if (t && t.failed === 0 && t.passed === 0 && t.skipped > 0) {
+                 // Every verification step was unresolved: nothing was actually verified, so this is
+                 // NOT a pass. (A run that only navigated and never checked anything proves nothing.)
+                 scenario_status[scenario] = 'FAIL';
+                 addStep('SCENARIO_UNVERIFIED', 'FAILED', 0, `${scenario}: none of its ${t.skipped} verification step(s) could be evaluated, so the scenario is not reported as passed.`, undefined, undefined);
+                 logTranscriptEvent('scenario', '', `Unverified: ${t.skipped} check(s) skipped, 0 evaluated`, 'FAILED', scenario);
+              } else {
+                 scenario_status[scenario] = 'PASS';
+              }
            }
         }
-        
+
         break; // Successfully completed actions, exit recovery loop
       }
       
@@ -1138,15 +1419,15 @@ export class ExecutionAgent {
       }
       
       // Capture screenshot on failure
-      const stepIndex = stepLogs.length + 1;
-      const screenshotPath = `./temp/screenshots/${executionId}-failed-step-${stepIndex}.png`;
+      const stepIndex = stepLogs.length + 1; const shotSeq = nextFailShot(executionId);
+      const screenshotPath = `./temp/screenshots/${executionId}-failed-step-${stepIndex}-f${shotSeq}.png`;
       await page.screenshot({ path: screenshotPath, fullPage: true });
       
       try {
         const fileData = await fs.readFile(screenshotPath);
         const { data, error } = await supabase.storage
           .from('screenshots')
-          .upload(`${executionId}-failed-step-${stepIndex}.png`, fileData, { contentType: 'image/png', upsert: true });
+          .upload(`${executionId}-failed-step-${stepIndex}-f${shotSeq}.png`, fileData, { contentType: 'image/png', upsert: true });
           
         if (!error && data) {
           const { data: publicData } = supabase.storage.from('screenshots').getPublicUrl(data.path);

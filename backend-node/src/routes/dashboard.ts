@@ -5,6 +5,86 @@ import { supabase } from '../utils/storage';
 const router = Router();
 router.use(authenticate);
 
+const TREND_DAYS_DEFAULT = 7;
+
+/**
+ * Command Center's date-range filter (7/15/30/90 days or a custom
+ * start/end pair). Both params are plain `yyyy-mm-dd` dates from the
+ * frontend's <input type="date">; start is anchored to 00:00:00 UTC and
+ * end to 23:59:59.999 UTC of that day so a single-day range still matches
+ * everything recorded that day. Either or both may be absent — absent
+ * means unbounded on that side, and when neither is present the whole
+ * history is returned (the default, unfiltered "all time" view).
+ */
+function parseDateRange(req: any): { startISO: string | undefined; endISO: string | undefined } {
+  const startDate = req.query.startDate as string | undefined;
+  const endDate = req.query.endDate as string | undefined;
+  const startISO = startDate ? new Date(`${startDate}T00:00:00.000Z`).toISOString() : undefined;
+  const endISO = endDate ? new Date(`${endDate}T23:59:59.999Z`).toISOString() : undefined;
+  return { startISO, endISO };
+}
+
+function withDateRange(q: any, col: string, startISO?: string, endISO?: string) {
+  let qq = q;
+  if (startISO) qq = qq.gte(col, startISO);
+  if (endISO) qq = qq.lte(col, endISO);
+  return qq;
+}
+
+/**
+ * Earliest `createdAt`/`created_at` across all four execution sources for a
+ * project (or the whole platform when projectId is unset) — used by the
+ * execution-trend endpoint's "All time" mode to size the trend window to
+ * this project's actual history instead of an arbitrary fixed window.
+ * Best-effort per source: one source erroring never blocks the others.
+ */
+async function findEarliestExecutionDate(projectId: string | undefined): Promise<Date | null> {
+  const candidates: Date[] = [];
+
+  async function tryQuery(fn: () => Promise<{ data: any; error: any }>, col: string) {
+    try {
+      const { data, error } = await fn();
+      if (error) throw error;
+      if (data && data[col]) candidates.push(new Date(data[col]));
+    } catch {
+      // best-effort — a broken source must not block the others
+    }
+  }
+
+  await Promise.all([
+    tryQuery(async () => {
+      let q = projectId
+        ? supabase.from('ExecutionLog').select('createdAt, suite:TestSuite!inner(projectId)').eq('suite.projectId', projectId)
+        : supabase.from('ExecutionLog').select('createdAt');
+      return q.order('createdAt', { ascending: true }).limit(1).maybeSingle();
+    }, 'createdAt'),
+    tryQuery(async () => {
+      let q = projectId
+        ? supabase
+            .from('mobile_executions')
+            .select('created_at, test:mobile_tests!inner(application:mobile_applications!inner(project_uuid))')
+            .eq('test.application.project_uuid', projectId)
+        : supabase.from('mobile_executions').select('created_at');
+      return q.order('created_at', { ascending: true }).limit(1).maybeSingle();
+    }, 'created_at'),
+    tryQuery(async () => {
+      let q = projectId
+        ? supabase.from('ApiExecution').select('createdAt').eq('projectId', projectId)
+        : supabase.from('ApiExecution').select('createdAt');
+      return q.order('createdAt', { ascending: true }).limit(1).maybeSingle();
+    }, 'createdAt'),
+    tryQuery(async () => {
+      let q = projectId
+        ? supabase.from('DbTestExecution').select('createdAt').eq('projectId', projectId)
+        : supabase.from('DbTestExecution').select('createdAt');
+      return q.order('createdAt', { ascending: true }).limit(1).maybeSingle();
+    }, 'createdAt'),
+  ]);
+
+  if (candidates.length === 0) return null;
+  return new Date(Math.min(...candidates.map((d) => d.getTime())));
+}
+
 /**
  * Counts ExecutionLog rows matching `filters`, optionally scoped to a project.
  * When `projectId` is set, TestSuite is joined with `!inner` so PostgREST will
@@ -46,6 +126,21 @@ export async function countMobileExecutions(projectId: string | undefined, filte
   return count || 0;
 }
 
+/**
+ * Same idea as countExecutions, for API Testing / Database Testing's own
+ * tables (ApiExecution, DbTestExecution). Simpler than the mobile helper
+ * above — both tables carry `projectId` directly, no join needed.
+ */
+async function countRows(table: 'ApiExecution' | 'DbTestExecution', projectId: string | undefined, filters: (q: any) => any) {
+  let query = projectId
+    ? supabase.from(table).select('id', { count: 'exact', head: true }).eq('projectId', projectId)
+    : supabase.from(table).select('*', { count: 'exact', head: true });
+  query = filters(query);
+  const { count, error } = await query;
+  if (error) throw error;
+  return count || 0;
+}
+
 router.get('/summary', async (req, res) => {
   try {
     const projectId = req.query.projectId as string | undefined;
@@ -59,13 +154,16 @@ router.get('/summary', async (req, res) => {
     // of a project's whole history — same idea as testType, applied to both
     // web (releaseId) and mobile (release_uuid), since both now carry it.
     const releaseId = req.query.releaseId as string | undefined;
+    const { startISO, endISO } = parseDateRange(req);
     const withTestType = (q: any) => (testType ? q.eq('testType', testType) : q);
     const withRelease = (q: any) => (releaseId ? q.eq('releaseId', releaseId) : q);
     const withMobileRelease = (q: any) => (releaseId ? q.eq('release_uuid', releaseId) : q);
+    const withDate = (q: any) => withDateRange(q, 'createdAt', startISO, endISO);
+    const withMobileDate = (q: any) => withDateRange(q, 'created_at', startISO, endISO);
 
-    const totalExecutions = await countExecutions(projectId, (q) => withRelease(withTestType(q)));
-    const passedCount = await countExecutions(projectId, (q) => withRelease(withTestType(q)).in('status', ['PASSED', 'COMPLETED']));
-    const failedCount = await countExecutions(projectId, (q) => withRelease(withTestType(q)).eq('status', 'FAILED'));
+    const totalExecutions = await countExecutions(projectId, (q) => withDate(withRelease(withTestType(q))));
+    const passedCount = await countExecutions(projectId, (q) => withDate(withRelease(withTestType(q))).in('status', ['PASSED', 'COMPLETED']));
+    const failedCount = await countExecutions(projectId, (q) => withDate(withRelease(withTestType(q))).eq('status', 'FAILED'));
 
     let selfHealingQuery = projectId
       ? supabase
@@ -80,12 +178,12 @@ router.get('/summary', async (req, res) => {
     let durationQuery = projectId
       ? supabase.from('ExecutionLog').select('durationMs, suite:TestSuite!inner(projectId)').eq('suite.projectId', projectId)
       : supabase.from('ExecutionLog').select('durationMs');
-    const { data: completedExecutions, error: durError } = await durationQuery.not('durationMs', 'is', null);
+    const { data: completedExecutions, error: durError } = await withDate(durationQuery).not('durationMs', 'is', null);
     if (durError) throw durError;
 
     let avgDuration = 0;
     if (completedExecutions && completedExecutions.length > 0) {
-      const sum = completedExecutions.reduce((acc, curr: any) => acc + (curr.durationMs || 0), 0);
+      const sum = completedExecutions.reduce((acc: number, curr: any) => acc + (curr.durationMs || 0), 0);
       avgDuration = Math.round((sum / completedExecutions.length) / 1000);
     }
 
@@ -96,9 +194,9 @@ router.get('/summary', async (req, res) => {
     // be able to break the web dashboard if something's off with them.
     let mobile = { totalExecutions: 0, passedCount: 0, failedCount: 0, selfHealingCount: 0, successRate: 0, avgDuration: 0 };
     try {
-      const mobileTotal = await countMobileExecutions(projectId, (q) => withMobileRelease(q));
-      const mobilePassed = await countMobileExecutions(projectId, (q) => withMobileRelease(q).eq('status', 'PASSED'));
-      const mobileFailed = await countMobileExecutions(projectId, (q) => withMobileRelease(q).in('status', ['FAILED', 'INFRA_FAILURE']));
+      const mobileTotal = await countMobileExecutions(projectId, (q) => withMobileDate(withMobileRelease(q)));
+      const mobilePassed = await countMobileExecutions(projectId, (q) => withMobileDate(withMobileRelease(q)).eq('status', 'PASSED'));
+      const mobileFailed = await countMobileExecutions(projectId, (q) => withMobileDate(withMobileRelease(q)).in('status', ['FAILED', 'INFRA_FAILURE']));
 
       let mobileHealingQuery = projectId
         ? supabase
@@ -115,12 +213,12 @@ router.get('/summary', async (req, res) => {
             .select('duration_ms, test:mobile_tests!inner(application:mobile_applications!inner(project_uuid))')
             .eq('test.application.project_uuid', projectId)
         : supabase.from('mobile_executions').select('duration_ms');
-      const { data: mobileCompleted, error: mobileDurError } = await mobileDurationQuery.not('duration_ms', 'is', null);
+      const { data: mobileCompleted, error: mobileDurError } = await withMobileDate(mobileDurationQuery).not('duration_ms', 'is', null);
       if (mobileDurError) throw mobileDurError;
 
       let mobileAvgDuration = 0;
       if (mobileCompleted && mobileCompleted.length > 0) {
-        const sum = mobileCompleted.reduce((acc, curr: any) => acc + (curr.duration_ms || 0), 0);
+        const sum = mobileCompleted.reduce((acc: number, curr: any) => acc + (curr.duration_ms || 0), 0);
         mobileAvgDuration = Math.round((sum / mobileCompleted.length) / 1000);
       }
 
@@ -136,8 +234,59 @@ router.get('/summary', async (req, res) => {
       console.error('Error fetching mobile summary (non-fatal, web summary unaffected):', mobileErr);
     }
 
-    const combinedTotal = totalExecutions + mobile.totalExecutions;
-    const combinedPassed = passedCount + mobile.passedCount;
+    // API Testing / Database Testing side of the same summary. Same
+    // best-effort contract as mobile above — neither can break the web
+    // summary. No self-healing concept for either (no healing agent), so
+    // that field stays 0, same as browser-distribution has no mobile
+    // equivalent.
+    let api = { totalExecutions: 0, passedCount: 0, failedCount: 0, selfHealingCount: 0, successRate: 0, avgDuration: 0 };
+    try {
+      const apiWithFilters = (q: any) => withDate((releaseId ? q.eq('releaseId', releaseId) : q));
+      const apiTotal = await countRows('ApiExecution', projectId, (q) => apiWithFilters(q));
+      const apiPassed = await countRows('ApiExecution', projectId, (q) => apiWithFilters(q).eq('status', 'PASSED'));
+      const apiFailed = await countRows('ApiExecution', projectId, (q) => apiWithFilters(q).eq('status', 'FAILED'));
+      let apiDurationQuery = projectId
+        ? supabase.from('ApiExecution').select('durationMs').eq('projectId', projectId)
+        : supabase.from('ApiExecution').select('durationMs');
+      const { data: apiCompleted } = await withDate(apiDurationQuery).not('durationMs', 'is', null);
+      let apiAvgDuration = 0;
+      if (apiCompleted && apiCompleted.length > 0) {
+        const sum = apiCompleted.reduce((acc: number, curr: any) => acc + (curr.durationMs || 0), 0);
+        apiAvgDuration = Math.round((sum / apiCompleted.length) / 1000);
+      }
+      api = {
+        totalExecutions: apiTotal, passedCount: apiPassed, failedCount: apiFailed, selfHealingCount: 0,
+        successRate: apiTotal === 0 ? 0 : Math.round((apiPassed / apiTotal) * 100), avgDuration: apiAvgDuration,
+      };
+    } catch (apiErr) {
+      console.error('Error fetching API testing summary (non-fatal, web summary unaffected):', apiErr);
+    }
+
+    let db = { totalExecutions: 0, passedCount: 0, failedCount: 0, selfHealingCount: 0, successRate: 0, avgDuration: 0 };
+    try {
+      const dbWithFilters = (q: any) => withDate((releaseId ? q.eq('releaseId', releaseId) : q));
+      const dbTotal = await countRows('DbTestExecution', projectId, (q) => dbWithFilters(q));
+      const dbPassed = await countRows('DbTestExecution', projectId, (q) => dbWithFilters(q).eq('status', 'PASSED'));
+      const dbFailed = await countRows('DbTestExecution', projectId, (q) => dbWithFilters(q).eq('status', 'FAILED'));
+      let dbDurationQuery = projectId
+        ? supabase.from('DbTestExecution').select('durationMs').eq('projectId', projectId)
+        : supabase.from('DbTestExecution').select('durationMs');
+      const { data: dbCompleted } = await withDate(dbDurationQuery).not('durationMs', 'is', null);
+      let dbAvgDuration = 0;
+      if (dbCompleted && dbCompleted.length > 0) {
+        const sum = dbCompleted.reduce((acc: number, curr: any) => acc + (curr.durationMs || 0), 0);
+        dbAvgDuration = Math.round((sum / dbCompleted.length) / 1000);
+      }
+      db = {
+        totalExecutions: dbTotal, passedCount: dbPassed, failedCount: dbFailed, selfHealingCount: 0,
+        successRate: dbTotal === 0 ? 0 : Math.round((dbPassed / dbTotal) * 100), avgDuration: dbAvgDuration,
+      };
+    } catch (dbErr) {
+      console.error('Error fetching database testing summary (non-fatal, web summary unaffected):', dbErr);
+    }
+
+    const combinedTotal = totalExecutions + mobile.totalExecutions + api.totalExecutions + db.totalExecutions;
+    const combinedPassed = passedCount + mobile.passedCount + api.passedCount + db.passedCount;
 
     res.json({
       totalExecutions,
@@ -147,10 +296,12 @@ router.get('/summary', async (req, res) => {
       successRate,
       avgDuration,
       mobile,
+      api,
+      db,
       combined: {
         totalExecutions: combinedTotal,
         passedCount: combinedPassed,
-        failedCount: failedCount + mobile.failedCount,
+        failedCount: failedCount + mobile.failedCount + api.failedCount + db.failedCount,
         selfHealingCount: (selfHealingCount || 0) + mobile.selfHealingCount,
         successRate: combinedTotal === 0 ? 0 : Math.round((combinedPassed / combinedTotal) * 100),
       },
@@ -163,14 +314,45 @@ router.get('/summary', async (req, res) => {
 
 router.get('/execution-trend', async (req, res) => {
   try {
-    const days = parseInt(req.query.days as string) || 7;
     const projectId = req.query.projectId as string | undefined;
-    const threshold = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const { startISO, endISO } = parseDateRange(req);
+    const allTime = req.query.allTime === 'true';
+
+    // Command Center's date-range filter (7/15/30/90/custom/all time)
+    // overrides the legacy `days`-back-from-now window whenever a start or
+    // end date is given, or "All time" is selected; with none of those,
+    // behavior is unchanged (last `days` days, anchored to now).
+    let rangeEnd: Date;
+    let rangeStart: Date;
+    let days: number;
+    if (allTime) {
+      rangeEnd = new Date();
+      const earliest = await findEarliestExecutionDate(projectId);
+      rangeStart = earliest ?? new Date(Date.now() - (TREND_DAYS_DEFAULT - 1) * 24 * 60 * 60 * 1000);
+      rangeStart.setHours(0, 0, 0, 0);
+      // Safety cap only — real installs won't hit this, but an unbounded
+      // "all time" window must never turn into an unbounded response body.
+      days = Math.min(730, Math.max(1, Math.round((rangeEnd.getTime() - rangeStart.getTime()) / (24 * 60 * 60 * 1000)) + 1));
+    } else if (startISO || endISO) {
+      rangeEnd = endISO ? new Date(endISO) : new Date();
+      rangeStart = startISO ? new Date(startISO) : (() => {
+        const d = new Date(rangeEnd);
+        d.setDate(d.getDate() - 29);
+        d.setHours(0, 0, 0, 0);
+        return d;
+      })();
+      days = Math.min(180, Math.max(1, Math.round((rangeEnd.getTime() - rangeStart.getTime()) / (24 * 60 * 60 * 1000)) + 1));
+    } else {
+      days = parseInt(req.query.days as string) || TREND_DAYS_DEFAULT;
+      rangeEnd = new Date();
+      rangeStart = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    }
+    const threshold = rangeStart;
 
     let query = projectId
       ? supabase.from('ExecutionLog').select('status, createdAt, suite:TestSuite!inner(projectId)').eq('suite.projectId', projectId)
       : supabase.from('ExecutionLog').select('status, createdAt');
-    const { data: executions, error } = await query.gte('createdAt', threshold.toISOString());
+    const { data: executions, error } = await query.gte('createdAt', threshold.toISOString()).lte('createdAt', rangeEnd.toISOString());
     if (error) throw error;
 
     const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -179,7 +361,7 @@ router.get('/execution-trend', async (req, res) => {
 
     // Initialize the last N days with zero to ensure empty days appear on graph in order
     for (let i = days - 1; i >= 0; i--) {
-      const d = new Date();
+      const d = new Date(rangeEnd);
       d.setDate(d.getDate() - i);
       const dayStr = dayNames[d.getDay()] as string;
       // If days > 7, append date to distinguish
@@ -191,7 +373,7 @@ router.get('/execution-trend', async (req, res) => {
     const bucket = (createdAt: string, status: string, isPassed: boolean, isFailed: boolean) => {
       const d = new Date(createdAt);
       d.setHours(0, 0, 0, 0);
-      const today = new Date();
+      const today = new Date(rangeEnd);
       today.setHours(0, 0, 0, 0);
       const diffTime = today.getTime() - d.getTime();
       const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
@@ -220,7 +402,7 @@ router.get('/execution-trend', async (req, res) => {
             .select('status, created_at, test:mobile_tests!inner(application:mobile_applications!inner(project_uuid))')
             .eq('test.application.project_uuid', projectId)
         : supabase.from('mobile_executions').select('status, created_at');
-      const { data: mobileExecutions, error: mobileError } = await mobileQuery.gte('created_at', threshold.toISOString());
+      const { data: mobileExecutions, error: mobileError } = await mobileQuery.gte('created_at', threshold.toISOString()).lte('created_at', rangeEnd.toISOString());
       if (mobileError) throw mobileError;
 
       (mobileExecutions || []).forEach((ex: any) => {
@@ -228,6 +410,29 @@ router.get('/execution-trend', async (req, res) => {
       });
     } catch (mobileErr) {
       console.error('Error fetching mobile execution trend (non-fatal, web trend unaffected):', mobileErr);
+    }
+
+    // API/DB testing side of the same trend, bucketed into the same series.
+    try {
+      let apiQuery = projectId
+        ? supabase.from('ApiExecution').select('status, createdAt').eq('projectId', projectId)
+        : supabase.from('ApiExecution').select('status, createdAt');
+      const { data: apiRuns, error: apiError } = await apiQuery.gte('createdAt', threshold.toISOString()).lte('createdAt', rangeEnd.toISOString());
+      if (apiError) throw apiError;
+      (apiRuns || []).forEach((ex: any) => bucket(ex.createdAt, ex.status, ex.status === 'PASSED', ex.status === 'FAILED'));
+    } catch (apiErr) {
+      console.error('Error fetching API testing trend (non-fatal, web trend unaffected):', apiErr);
+    }
+
+    try {
+      let dbQuery = projectId
+        ? supabase.from('DbTestExecution').select('status, createdAt').eq('projectId', projectId)
+        : supabase.from('DbTestExecution').select('status, createdAt');
+      const { data: dbRuns, error: dbError } = await dbQuery.gte('createdAt', threshold.toISOString()).lte('createdAt', rangeEnd.toISOString());
+      if (dbError) throw dbError;
+      (dbRuns || []).forEach((ex: any) => bucket(ex.createdAt, ex.status, ex.status === 'PASSED', ex.status === 'FAILED'));
+    } catch (dbErr) {
+      console.error('Error fetching database testing trend (non-fatal, web trend unaffected):', dbErr);
     }
 
     res.json(trendData);
@@ -240,11 +445,12 @@ router.get('/execution-trend', async (req, res) => {
 router.get('/browser-distribution', async (req, res) => {
   try {
     const projectId = req.query.projectId as string | undefined;
+    const { startISO, endISO } = parseDateRange(req);
 
     let query = projectId
       ? supabase.from('ExecutionLog').select('browser, suite:TestSuite!inner(projectId)').eq('suite.projectId', projectId)
       : supabase.from('ExecutionLog').select('browser');
-    const { data: rows, error } = await query;
+    const { data: rows, error } = await withDateRange(query, 'createdAt', startISO, endISO);
     if (error) throw error;
 
     // Aggregate client-side (replaces Prisma's groupBy — same result, and
@@ -266,9 +472,123 @@ router.get('/browser-distribution', async (req, res) => {
   }
 });
 
+/**
+ * GET /coverage-distribution — Command Center's "coverage" donut, source-
+ * aware. `browser-distribution` above only ever means "web browsers"; this
+ * is the generalized version that the Command Center's Show: All/Web/
+ * Mobile/API/Database filter drives, returning whichever breakdown is
+ * actually meaningful for the selected source instead of always showing
+ * web browser data regardless of what's selected:
+ *   web     → browser engine (same data as /browser-distribution)
+ *   mobile  → device platform (Android / iOS)
+ *   api     → HTTP methods exercised across each run's request steps
+ *   db      → database engine (from the linked DbConnection)
+ *   all     → run counts per testing type (Web / Mobile / API / Database)
+ */
+router.get('/coverage-distribution', async (req, res) => {
+  try {
+    const projectId = req.query.projectId as string | undefined;
+    const source = (req.query.source as string) || 'all';
+    const { startISO, endISO } = parseDateRange(req);
+
+    if (source === 'web') {
+      let query = projectId
+        ? supabase.from('ExecutionLog').select('browser, suite:TestSuite!inner(projectId)').eq('suite.projectId', projectId)
+        : supabase.from('ExecutionLog').select('browser');
+      const { data: rows, error } = await withDateRange(query, 'createdAt', startISO, endISO);
+      if (error) throw error;
+      const merged: Record<string, number> = {};
+      (rows || []).forEach((row: any) => {
+        const browser = row.browser || 'chromium';
+        merged[browser] = (merged[browser] || 0) + 1;
+      });
+      return res.json(
+        Object.entries(merged).map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count),
+      );
+    }
+
+    if (source === 'mobile') {
+      let query = projectId
+        ? supabase
+            .from('mobile_executions')
+            .select('created_at, test:mobile_tests!inner(application:mobile_applications!inner(platform, project_uuid))')
+            .eq('test.application.project_uuid', projectId)
+        : supabase.from('mobile_executions').select('created_at, test:mobile_tests(application:mobile_applications(platform))');
+      const { data: rows, error } = await withDateRange(query, 'created_at', startISO, endISO);
+      if (error) throw error;
+      const merged: Record<string, number> = {};
+      (rows || []).forEach((row: any) => {
+        const platform = row.test?.application?.platform || 'android';
+        const label = platform.toLowerCase() === 'ios' ? 'iOS' : 'Android';
+        merged[label] = (merged[label] || 0) + 1;
+      });
+      return res.json(
+        Object.entries(merged).map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count),
+      );
+    }
+
+    if (source === 'api') {
+      let query = projectId
+        ? supabase.from('ApiExecution').select('steps, createdAt').eq('projectId', projectId)
+        : supabase.from('ApiExecution').select('steps, createdAt');
+      const { data: rows, error } = await withDateRange(query, 'createdAt', startISO, endISO);
+      if (error) throw error;
+      const merged: Record<string, number> = {};
+      (rows || []).forEach((row: any) => {
+        const steps = Array.isArray(row.steps) ? row.steps : [];
+        steps.forEach((step: any) => {
+          const method = String(step?.method || 'GET').toUpperCase();
+          merged[method] = (merged[method] || 0) + 1;
+        });
+      });
+      return res.json(
+        Object.entries(merged).map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count),
+      );
+    }
+
+    if (source === 'db') {
+      let query = projectId
+        ? supabase.from('DbTestExecution').select('createdAt, connection:DbConnection(engine)').eq('projectId', projectId)
+        : supabase.from('DbTestExecution').select('createdAt, connection:DbConnection(engine)');
+      const { data: rows, error } = await withDateRange(query, 'createdAt', startISO, endISO);
+      if (error) throw error;
+      const merged: Record<string, number> = {};
+      (rows || []).forEach((row: any) => {
+        const engine = row.connection?.engine || 'unknown';
+        merged[engine] = (merged[engine] || 0) + 1;
+      });
+      return res.json(
+        Object.entries(merged).map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count),
+      );
+    }
+
+    // 'all' — composition by testing type, each fetched best-effort so one
+    // source erroring doesn't blank the rest (same contract as /summary).
+    const withDate = (q: any) => withDateRange(q, 'createdAt', startISO, endISO);
+    const withMobileDate = (q: any) => withDateRange(q, 'created_at', startISO, endISO);
+    const counts: Record<string, number> = { Web: 0, Mobile: 0, API: 0, Database: 0 };
+    await Promise.all([
+      countExecutions(projectId, (q) => withDate(q)).then((c) => { counts.Web = c; }).catch(() => {}),
+      countMobileExecutions(projectId, (q) => withMobileDate(q)).then((c) => { counts.Mobile = c; }).catch(() => {}),
+      countRows('ApiExecution', projectId, (q) => withDate(q)).then((c) => { counts.API = c; }).catch(() => {}),
+      countRows('DbTestExecution', projectId, (q) => withDate(q)).then((c) => { counts.Database = c; }).catch(() => {}),
+    ]);
+    res.json(
+      Object.entries(counts)
+        .filter(([, count]) => count > 0)
+        .map(([label, count]) => ({ label, count }))
+        .sort((a, b) => b.count - a.count),
+    );
+  } catch (err: any) {
+    console.error('Error fetching coverage distribution:', err);
+    res.status(500).json({ error: 'Failed to fetch coverage distribution' });
+  }
+});
+
 router.get('/recent-executions', async (req, res) => {
   const limit = parseInt(req.query.limit as string) || 25;
   const projectId = req.query.projectId as string | undefined;
+  const { startISO, endISO } = parseDateRange(req);
   try {
     // Fetch a wider raw window than `limit` — an Excel batch can contain
     // many ExecutionLog rows that all collapse into a single folder card,
@@ -283,7 +603,7 @@ router.get('/recent-executions', async (req, res) => {
           .eq('suite.projectId', projectId)
       : supabase.from('ExecutionLog').select('*, suite:TestSuite(name, projectId, project:Project(name))');
 
-    const { data: runs, error } = await query
+    const { data: runs, error } = await withDateRange(query, 'createdAt', startISO, endISO)
       .order('createdAt', { ascending: false })
       .limit(rawTake);
     if (error) throw error;
@@ -345,6 +665,15 @@ router.get('/recent-executions', async (req, res) => {
           status: run.status.toLowerCase(),
           duration: durationSec,
           startedAt: run.startedAt,
+          // CI-trigger metadata (see routes/ci.ts) — undefined on every run
+          // launched the normal way, so this never changes how existing
+          // rows render.
+          ...(run.triggeredBy === 'ci' ? { triggeredBy: 'ci', commitSha: run.commitSha, branch: run.branch, prNumber: run.prNumber } : {}),
+          // Jira Intake metadata (see routes/jiraIntake.ts) — only set on a run
+          // a Jira bug triggered; absent everywhere else.
+          ...(run.triggeredBy === 'jira'
+            ? { triggeredBy: 'jira', jiraSourceIssueKey: run.jiraSourceIssueKey, jiraSourceReporter: run.jiraSourceReporter }
+            : {}),
         });
       }
     }
@@ -363,7 +692,7 @@ router.get('/recent-executions', async (req, res) => {
             .from('mobile_executions')
             .select('id, status, duration_ms, created_at, device:mobile_devices(model, serial), test:mobile_tests(name, application:mobile_applications(name))');
 
-      const { data: mobileRuns, error: mobileError } = await mobileQuery
+      const { data: mobileRuns, error: mobileError } = await withDateRange(mobileQuery, 'created_at', startISO, endISO)
         .order('created_at', { ascending: false })
         .limit(rawTake);
       if (mobileError) throw mobileError;
@@ -384,6 +713,57 @@ router.get('/recent-executions', async (req, res) => {
       });
     } catch (mobileErr) {
       console.error('Error fetching mobile recent executions (non-fatal, web list unaffected):', mobileErr);
+    }
+
+    // API Testing side of the same feed — same flat 'execution' shape,
+    // 'API' standing in for a browser/device column. Best-effort.
+    try {
+      let apiQuery = projectId
+        ? supabase.from('ApiExecution').select('id, name, status, durationMs, createdAt').eq('projectId', projectId)
+        : supabase.from('ApiExecution').select('id, name, status, durationMs, createdAt');
+      const { data: apiRuns, error: apiError } = await withDateRange(apiQuery, 'createdAt', startISO, endISO).order('createdAt', { ascending: false }).limit(rawTake);
+      if (apiError) throw apiError;
+      (apiRuns || []).forEach((run: any) => {
+        items.push({
+          type: 'execution',
+          source: 'api',
+          id: run.id,
+          run_id: run.id,
+          testName: run.name,
+          browser: 'API',
+          projectName: 'API Testing',
+          status: String(run.status || '').toLowerCase(),
+          duration: run.durationMs ? Math.round(run.durationMs / 1000) : 0,
+          startedAt: run.createdAt,
+        });
+      });
+    } catch (apiErr) {
+      console.error('Error fetching API testing recent executions (non-fatal, web list unaffected):', apiErr);
+    }
+
+    // Database Testing side of the same feed.
+    try {
+      let dbQuery = projectId
+        ? supabase.from('DbTestExecution').select('id, name, status, durationMs, createdAt, connection:DbConnection(engine)').eq('projectId', projectId)
+        : supabase.from('DbTestExecution').select('id, name, status, durationMs, createdAt, connection:DbConnection(engine)');
+      const { data: dbRuns, error: dbError } = await withDateRange(dbQuery, 'createdAt', startISO, endISO).order('createdAt', { ascending: false }).limit(rawTake);
+      if (dbError) throw dbError;
+      (dbRuns || []).forEach((run: any) => {
+        items.push({
+          type: 'execution',
+          source: 'db',
+          id: run.id,
+          run_id: run.id,
+          testName: run.name,
+          browser: run.connection?.engine || 'DB',
+          projectName: 'Database Testing',
+          status: String(run.status || '').toLowerCase(),
+          duration: run.durationMs ? Math.round(run.durationMs / 1000) : 0,
+          startedAt: run.createdAt,
+        });
+      });
+    } catch (dbErr) {
+      console.error('Error fetching database testing recent executions (non-fatal, web list unaffected):', dbErr);
     }
 
     items.sort((a, b) => new Date(b.startedAt || 0).getTime() - new Date(a.startedAt || 0).getTime());

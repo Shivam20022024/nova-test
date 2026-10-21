@@ -29,6 +29,8 @@ const io = new Server(httpServer, {
 });
 
 import { initExecutionWorker } from './queue/executionWorker';
+import { initApiDbTestWorker } from './queue/apiDbTestWorker';
+import { initJiraIntakePoller } from './services/jiraIntakePoller';
 import { mobileProxy, authenticateUpgrade, denyUpgrade, MOBILE_API_PREFIX } from './routes/mobile';
 
 // Live-view WebSocket for mobile executions.
@@ -59,8 +61,25 @@ httpServer.on('upgrade', async (req, socket, head) => {
 
 app.set('io', io);
 
-// Initialize BullMQ background worker
-initExecutionWorker(io);
+// Background workers are started ONLY after this process owns the HTTP port (see listen below).
+// Why: a second copy of the backend (e.g. `npm run dev` started twice) used to fail to bind the port, have
+// that error swallowed by the global handler, and carry on as a "ghost" worker. It then picked up test
+// runs from the shared queue and streamed their live telemetry to a Socket.IO server that nobody is
+// connected to - the run worked, but the Live tab stayed blank.
+let workersStarted = false;
+function startBackgroundWorkers() {
+  if (workersStarted) return;
+  workersStarted = true;
+  // Initialize BullMQ background worker
+  initExecutionWorker(io);
+  // Separate queue/worker for API Testing and Database Testing — see
+  // queue/apiDbTestWorker.ts for why this is not folded into the worker above.
+  initApiDbTestWorker(io);
+  // Jira Intake: watches configured Jira projects for labelled bugs and turns
+  // them into autonomous runs. Inert until a project opts in (JiraIntakeConfig
+  // .enabled); disable entirely with JIRA_INTAKE_DISABLED=1.
+  initJiraIntakePoller();
+}
 
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
@@ -75,8 +94,27 @@ io.on('connection', (socket) => {
   });
 });
 
+// If the port is taken, wait briefly (a restarting copy of this server may still be shutting down), then
+// exit loudly. Never keep running without the port: that is the ghost-worker situation described above.
+let listenAttempts = 0;
+httpServer.on('error', (err: any) => {
+  if (err?.code === 'EADDRINUSE') {
+    listenAttempts++;
+    if (listenAttempts <= 8) {
+      console.warn(`[Startup] Port ${PORT} is busy (attempt ${listenAttempts}/8); retrying in 1.5s...`);
+      setTimeout(() => httpServer.listen(PORT), 1500);
+      return;
+    }
+    console.error(`[Startup] FATAL: port ${PORT} is already used by another NovaTest backend. Stop the other copy ('npm run dev' running twice?). This process will not start workers and is exiting.`);
+    process.exit(1);
+  }
+  console.error('[Startup] HTTP server error:', err?.message || err);
+  process.exit(1);
+});
+
 httpServer.listen(PORT, () => {
   console.log(`Novalantis Backend running on port ${PORT}`);
+  startBackgroundWorkers();
 });
 
 // trigger nodemon restart

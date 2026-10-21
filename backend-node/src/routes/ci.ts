@@ -1,9 +1,49 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { randomBytes } from 'crypto';
+import { authenticate, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
 const CI_API_KEY = process.env.CI_API_KEY || '';
 const SELF_BASE_URL = `http://127.0.0.1:${process.env.PORT || 8080}`;
+
+// GET /api/v1/ci/health — session-authenticated (NOT the CI key), for the
+// Integrations page to show "CI/CD: Configured / Not configured" without
+// ever needing or exposing the actual secret. Defined before requireCiKey
+// below so it deliberately skips that gate.
+router.get('/health', authenticate, (_req: Request, res: Response) => {
+  res.json({ configured: Boolean(CI_API_KEY) });
+});
+
+// POST /api/v1/ci/simulate — session-authenticated equivalent of /trigger,
+// for the Integrations page's "Simulate a CI push" demo button. A real CI
+// pipeline always uses /trigger with the CI_API_KEY; this exists purely so
+// a demo can show the same pipeline working without wiring up an actual
+// GitHub repo. Always async (returns immediately) since the caller is a
+// human waiting on a button, not a CI job blocking a pipeline step.
+router.post('/simulate', authenticate, async (req: AuthRequest, res: Response) => {
+  const { project_id, suite_id, browsers } = req.body || {};
+  if (!project_id && !suite_id) {
+    return res.status(400).json({ error: 'project_id or suite_id is required.' });
+  }
+  const source = {
+    provider: 'demo',
+    branch: 'main',
+    commitSha: randomBytes(4).toString('hex'),
+  };
+  const { httpStatus, json } = await callSelf('POST', '/api/v1/executions/run-multi-test', {
+    test_name: `CI run (${source.commitSha})`,
+    browsers: Array.isArray(browsers) && browsers.length > 0 ? browsers : ['chromium'],
+    project_id,
+    suite_id,
+    source,
+  });
+  if (httpStatus >= 400) {
+    return res.status(httpStatus).json({ error: json.error || 'Failed to queue simulated CI run.', details: json });
+  }
+  const executionIds: string[] = json.executionIds || [];
+  res.status(202).json({ message: 'Simulated CI run queued.', executionIds, source });
+});
 
 // Auth: reuses the SAME shared CI key already trusted by the rest of the
 // API (middleware/auth.ts's x-api-key bypass) instead of inventing a new
@@ -77,7 +117,7 @@ router.post('/trigger', async (req: Request, res: Response) => {
   const commitLabel = source?.commitSha ? ` (${String(source.commitSha).slice(0, 8)})` : '';
   const { httpStatus, json } = await callSelf('POST', '/api/v1/executions/run-multi-test', {
     test_name: test_name || `CI run${commitLabel}`,
-    base_url, steps, browsers, project_id, suite_id,
+    base_url, steps, browsers, project_id, suite_id, source,
   });
 
   if (httpStatus >= 400) {

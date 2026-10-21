@@ -52,6 +52,10 @@ import ciRoutes from './routes/ci';
 import releasesRoutes from './routes/releases';
 import sprintsRoutes from './routes/sprints';
 import testCasesRoutes from './routes/testCases';
+import dbConnectionsRoutes from './routes/dbConnections';
+import apiTestsRoutes from './routes/apiTests';
+import dbTestsRoutes from './routes/dbTests';
+import jiraIntakeRoutes from './routes/jiraIntake';
 
 app.use('/api/v1/suites', suitesRoutes);
 app.use('/api/v1/executions', executionRoutes);
@@ -67,6 +71,10 @@ app.use('/api/v1/ci', ciRoutes);
 app.use('/api/v1/releases', releasesRoutes);
 app.use('/api/v1/sprints', sprintsRoutes);
 app.use('/api/v1/test-cases', testCasesRoutes);
+app.use('/api/v1/db-connections', dbConnectionsRoutes);
+app.use('/api/v1/api-tests', apiTestsRoutes);
+app.use('/api/v1/db-tests', dbTestsRoutes);
+app.use('/api/v1/jira-intake', jiraIntakeRoutes);
 
 // Ensure Supabase buckets exist
 ensureBucketsExist().catch(console.error);

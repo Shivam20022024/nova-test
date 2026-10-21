@@ -3,7 +3,7 @@ import { supabase } from '../utils/storage';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { flowProducer, executionQueueName } from '../queue/executionWorker';
 import { resolveReleaseScope, resolveSprintScope, isTestRunInProject } from '../utils/traceabilityScope';
-import { aggregateTestCaseStatus, AggregatedStatus, ExecRowLite, normalizeExecStatus } from '../utils/traceabilityRollup';
+import { aggregateTestCaseStatus, AggregatedStatus, ExecRowLite, normalizeExecStatus, normalizeMobileExecStatus, normalizeApiDbExecStatus } from '../utils/traceabilityRollup';
 
 /**
  * Sprint management. A Sprint always belongs to exactly one Release
@@ -495,6 +495,10 @@ router.get('/:id/results', async (req: AuthRequest, res) => {
       };
     });
 
+    const { mobileRuns, mobileSummary } = await fetchMobileRuns(scope.sprint.id);
+    const { apiRuns, apiSummary } = await fetchApiRuns(scope.sprint.id);
+    const { dbRuns, dbSummary } = await fetchDbRuns(scope.sprint.id);
+
     res.json({
       sprint: {
         id: scope.sprint.id,
@@ -514,10 +518,317 @@ router.get('/:id/results', async (req: AuthRequest, res) => {
       testCases,
       adHocSummary,
       adHocRuns,
+      mobileSummary,
+      mobileRuns,
+      apiSummary,
+      apiRuns,
+      dbSummary,
+      dbRuns,
     });
   } catch (err: any) {
     console.error('Error computing sprint results:', err);
     res.status(500).json({ error: 'Failed to compute sprint results' });
+  }
+});
+
+// ── Full sprint report (summary + failure detail + evidence) ──────────────
+// Everything /:id/results already returns, PLUS full execution detail (step
+// logs, screenshots, video, self-heal events) for every FAILED test case and
+// ad-hoc run — a PASSED one stays summary-only. Query cost scales with how
+// many things failed, not with total executions, so this stays cheap even
+// for a long-lived sprint. `buildSprintReport` is exported because the
+// Release- and Project-level report endpoints are literally "loop this over
+// every sprint" — no separate aggregation logic needed at those levels.
+
+type ExecutionDetailLite = {
+  executionId: string;
+  status: string;
+  browser: string | null;
+  testName: string | null;
+  targetUrl: string | null;
+  durationMs: number | null;
+  createdAt: string;
+  stepLogs: any[];
+  screenshots: any[];
+  videos: any[];
+  healingEvents: any[];
+  reportPath: string;
+};
+
+async function fetchExecutionDetails(executionIds: string[]): Promise<Map<string, ExecutionDetailLite>> {
+  const map = new Map<string, ExecutionDetailLite>();
+  if (executionIds.length === 0) return map;
+  const { data, error } = await supabase
+    .from('ExecutionLog')
+    .select('id, status, browser, testName, targetUrl, durationMs, createdAt, stepLogs, screenshots:Screenshot(*), videos:Video(*), healingEvents:HealingEvent(*)')
+    .in('id', executionIds);
+  if (error) throw error;
+  for (const e of (data || []) as any[]) {
+    let safeStepLogs: any[] = [];
+    try {
+      if (Array.isArray(e.stepLogs)) safeStepLogs = e.stepLogs;
+      else if (typeof e.stepLogs === 'string') {
+        const parsed = JSON.parse(e.stepLogs);
+        safeStepLogs = Array.isArray(parsed) ? parsed : [];
+      }
+    } catch {
+      safeStepLogs = [];
+    }
+    map.set(e.id, {
+      executionId: e.id,
+      status: e.status,
+      browser: e.browser,
+      testName: e.testName,
+      targetUrl: e.targetUrl,
+      durationMs: e.durationMs,
+      createdAt: e.createdAt,
+      stepLogs: safeStepLogs,
+      screenshots: e.screenshots || [],
+      videos: e.videos || [],
+      healingEvents: e.healingEvents || [],
+      reportPath: `/app/execution/${e.id}/report`,
+    });
+  }
+  return map;
+}
+
+type MobileRunLite = {
+  executionId: number;
+  testName: string | null;
+  status: string;
+  deviceId: number | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  durationMs: number | null;
+  reportPath: string;
+};
+
+/**
+ * Mobile test runs tagged to this sprint via mobile_executions.sprint_uuid —
+ * the Appium engine's own soft-reference (see MobileExecution.sprint_uuid in
+ * backend/mobile/models.py). These live in a SQLAlchemy-owned table in the
+ * same physical Postgres database (same pattern as dashboard.ts's
+ * countMobileExecutions), not behind any web-side FK, so this is a plain
+ * filter rather than a join through ExecutionLog. Every mobile run generated
+ * against a sprint is "ad hoc" from the web model's point of view — there is
+ * no SprintTestCase-style assignment on the mobile side — so these are kept
+ * as their own list alongside adHocRuns rather than merged into it.
+ */
+async function fetchMobileRuns(sprintId: string): Promise<{ mobileRuns: MobileRunLite[]; mobileSummary: { total: number; passed: number; failed: number; running: number; review: number } }> {
+  const { data, error } = await supabase
+    .from('mobile_executions')
+    .select('id, status, device_id, started_at, completed_at, duration_ms, test:mobile_tests(name)')
+    .eq('sprint_uuid', sprintId)
+    .order('id', { ascending: false });
+  if (error) throw error;
+
+  const mobileRuns: MobileRunLite[] = ((data || []) as any[]).map((e) => ({
+    executionId: e.id,
+    testName: e.test?.name ?? null,
+    status: e.status,
+    deviceId: e.device_id,
+    startedAt: e.started_at,
+    completedAt: e.completed_at,
+    durationMs: e.duration_ms,
+    reportPath: `/app/mobile/executions/${e.id}`,
+  }));
+
+  const mobileSummary = mobileRuns.reduce(
+    (acc, r) => {
+      acc.total++;
+      const n = normalizeMobileExecStatus(r.status);
+      if (n === 'PASSED') acc.passed++;
+      else if (n === 'FAILED') acc.failed++;
+      else if (n === 'RUNNING') acc.running++;
+      else acc.review++;
+      return acc;
+    },
+    { total: 0, passed: 0, failed: 0, running: 0, review: 0 },
+  );
+
+  return { mobileRuns, mobileSummary };
+}
+
+type ApiDbRunLite = {
+  executionId: string;
+  testName: string | null;
+  status: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  durationMs: number | null;
+  reportPath: string;
+};
+type ApiDbRunSummary = { total: number; passed: number; failed: number; running: number };
+
+function summariseApiDbRuns(runs: ApiDbRunLite[]): ApiDbRunSummary {
+  return runs.reduce(
+    (acc, r) => {
+      acc.total++;
+      const n = normalizeApiDbExecStatus(r.status);
+      if (n === 'PASSED') acc.passed++;
+      else if (n === 'FAILED') acc.failed++;
+      else acc.running++;
+      return acc;
+    },
+    { total: 0, passed: 0, failed: 0, running: 0 },
+  );
+}
+
+/** API Testing runs tagged to this sprint via ApiExecution.sprintId — its
+ *  own table (see routes/apiTests.ts), not ExecutionLog. Same "every run is
+ *  ad hoc" reasoning as fetchMobileRuns above. */
+async function fetchApiRuns(sprintId: string): Promise<{ apiRuns: ApiDbRunLite[]; apiSummary: ApiDbRunSummary }> {
+  const { data, error } = await supabase
+    .from('ApiExecution')
+    .select('id, name, status, startedAt, completedAt, durationMs')
+    .eq('sprintId', sprintId)
+    .order('createdAt', { ascending: false });
+  if (error) throw error;
+  const apiRuns: ApiDbRunLite[] = ((data || []) as any[]).map((e) => ({
+    executionId: e.id, testName: e.name, status: e.status, startedAt: e.startedAt,
+    completedAt: e.completedAt, durationMs: e.durationMs, reportPath: `/app/api-testing/executions/${e.id}/report`,
+  }));
+  return { apiRuns, apiSummary: summariseApiDbRuns(apiRuns) };
+}
+
+/** Database Testing runs tagged to this sprint via DbTestExecution.sprintId. */
+async function fetchDbRuns(sprintId: string): Promise<{ dbRuns: ApiDbRunLite[]; dbSummary: ApiDbRunSummary }> {
+  const { data, error } = await supabase
+    .from('DbTestExecution')
+    .select('id, name, status, startedAt, completedAt, durationMs')
+    .eq('sprintId', sprintId)
+    .order('createdAt', { ascending: false });
+  if (error) throw error;
+  const dbRuns: ApiDbRunLite[] = ((data || []) as any[]).map((e) => ({
+    executionId: e.id, testName: e.name, status: e.status, startedAt: e.startedAt,
+    completedAt: e.completedAt, durationMs: e.durationMs, reportPath: `/app/db-testing/executions/${e.id}/report`,
+  }));
+  return { dbRuns, dbSummary: summariseApiDbRuns(dbRuns) };
+}
+
+export async function buildSprintReport(scope: { sprint: any; release: any; projectId: string }) {
+  const { data: assignments, error: aErr } = await supabase
+    .from('SprintTestCase')
+    .select('testRunId, assignmentSource, carriedFromSprintId, addedAt, testRun:TestRun(id, name, code, intent, suiteId)')
+    .eq('sprintId', scope.sprint.id)
+    .order('addedAt', { ascending: true });
+  if (aErr) throw aErr;
+
+  const { data: execs, error: eErr } = await supabase
+    .from('ExecutionLog')
+    .select('id, status, browser, createdAt, testRunId, testName, targetUrl, durationMs, jiraTicketId')
+    .eq('sprintId', scope.sprint.id)
+    .order('createdAt', { ascending: false });
+  if (eErr) throw eErr;
+
+  const execByTestRun = new Map<string, ExecRowLite[]>();
+  const adHocRuns: any[] = [];
+  for (const e of (execs || []) as any[]) {
+    if (!e.testRunId) {
+      adHocRuns.push({
+        executionId: e.id, status: e.status, browser: e.browser, testName: e.testName, targetUrl: e.targetUrl,
+        durationMs: e.durationMs, createdAt: e.createdAt, jiraTicketId: e.jiraTicketId,
+        reportPath: `/app/execution/${e.id}/report`,
+      });
+      continue;
+    }
+    const list = execByTestRun.get(e.testRunId) || [];
+    list.push({ id: e.id, status: e.status, browser: e.browser, createdAt: e.createdAt });
+    execByTestRun.set(e.testRunId, list);
+  }
+
+  const adHocSummary = adHocRuns.reduce(
+    (acc, r) => {
+      const n = normalizeExecStatus(r.status);
+      acc.total++;
+      if (n === 'PASSED') acc.passed++;
+      else if (n === 'FAILED') acc.failed++;
+      else if (n === 'RUNNING') acc.running++;
+      else acc.other++;
+      return acc;
+    },
+    { total: 0, passed: 0, failed: 0, running: 0, other: 0 },
+  );
+
+  const counts = {
+    assignedTestCount: (assignments || []).length,
+    executedTestCount: 0, passedTestCount: 0, failedTestCount: 0,
+    skippedTestCount: 0, notRunTestCount: 0, runningTestCount: 0, partialTestCount: 0,
+  };
+
+  const testCasesRaw = (assignments || []).map((a: any) => {
+    const rows = execByTestRun.get(a.testRunId) || [];
+    const agg = aggregateTestCaseStatus(rows);
+    if (agg.status !== 'NOT_RUN') counts.executedTestCount++;
+    const inc: Record<AggregatedStatus, () => void> = {
+      PASSED: () => counts.passedTestCount++, FAILED: () => counts.failedTestCount++, SKIPPED: () => counts.skippedTestCount++,
+      NOT_RUN: () => counts.notRunTestCount++, RUNNING: () => counts.runningTestCount++, PARTIAL: () => counts.partialTestCount++,
+    };
+    inc[agg.status]();
+    return {
+      testRunId: a.testRunId, code: a.testRun?.code ?? null, name: a.testRun?.name ?? null, intent: a.testRun?.intent ?? null,
+      suiteId: a.testRun?.suiteId ?? null, assignmentSource: a.assignmentSource, carriedFromSprintId: a.carriedFromSprintId, addedAt: a.addedAt,
+      aggregatedStatus: agg.status, lastExecutedAt: agg.lastExecutedAt, executionCount: agg.executionCount, latestExecutions: agg.latestByBrowser,
+    };
+  });
+
+  // Full detail only for the FAILED browser-runs behind a FAILED/PARTIAL test
+  // case, plus any FAILED ad-hoc run — batched into ONE query rather than one
+  // per failure.
+  const failingExecutionIds = new Set<string>();
+  for (const tc of testCasesRaw) {
+    if (tc.aggregatedStatus === 'FAILED' || tc.aggregatedStatus === 'PARTIAL') {
+      for (const b of tc.latestExecutions as any[]) {
+        if (normalizeExecStatus(b.status) === 'FAILED') failingExecutionIds.add(b.executionId);
+      }
+    }
+  }
+  for (const r of adHocRuns) {
+    if (normalizeExecStatus(r.status) === 'FAILED') failingExecutionIds.add(r.executionId);
+  }
+  const detailMap = await fetchExecutionDetails([...failingExecutionIds]);
+
+  const testCases = testCasesRaw.map((tc: any) => ({
+    ...tc,
+    failureDetails: (tc.latestExecutions as any[])
+      .filter((b) => detailMap.has(b.executionId))
+      .map((b) => detailMap.get(b.executionId)),
+  }));
+  const adHocRunsWithDetail = adHocRuns.map((r: any) => ({ ...r, executionDetail: detailMap.get(r.executionId) || null }));
+
+  const { mobileRuns, mobileSummary } = await fetchMobileRuns(scope.sprint.id);
+  const { apiRuns, apiSummary } = await fetchApiRuns(scope.sprint.id);
+  const { dbRuns, dbSummary } = await fetchDbRuns(scope.sprint.id);
+
+  return {
+    sprint: {
+      id: scope.sprint.id, name: scope.sprint.name, status: scope.sprint.status,
+      sequence: scope.sprint.sequence, startDate: scope.sprint.startDate, endDate: scope.sprint.endDate,
+    },
+    release: { id: scope.release.id, name: scope.release.name, status: scope.release.status ?? 'PLANNED', projectId: scope.projectId },
+    ...counts,
+    testCases,
+    adHocSummary,
+    adHocRuns: adHocRunsWithDetail,
+    mobileSummary,
+    mobileRuns,
+    apiSummary,
+    apiRuns,
+    dbSummary,
+    dbRuns,
+  };
+}
+
+// GET /api/v1/sprints/:id/report
+router.get('/:id/report', async (req: AuthRequest, res) => {
+  try {
+    const scope = await resolveSprintScope(req.user?.id, req.params.id as string);
+    if (!scope) return res.status(404).json({ error: 'Sprint not found.' });
+    const report = await buildSprintReport(scope);
+    res.json(report);
+  } catch (err: any) {
+    console.error('Error building sprint report:', err);
+    res.status(500).json({ error: 'Failed to build sprint report' });
   }
 });
 

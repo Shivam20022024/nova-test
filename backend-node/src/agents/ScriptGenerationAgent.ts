@@ -91,12 +91,16 @@ CRITICAL: Extract the EXACT text from the provided steps ONLY IF it maps to actu
 3. FORMS: Map semantic fields logically. NEVER call fill() on a 'form' element itself. CRITICAL: YOU MUST INCLUDE BOTH USERNAME AND PASSWORD ACTIONS IF SPECIFIED.
 4. NAVIGATION VS CLICKS: Natural-language navigation intent ("Open", "Navigate", "Visit", "Go to") for the TARGET APPLICATION itself MUST be converted to a 'goto' action with 'target' set to the target URL. DO NOT generate a 'click' action for the website name (e.g. if the instruction is "Open SauceDemo", generate goto target="https://www.saucedemo.com", do NOT generate a click on a link named SauceDemo). Mid-test interactions like "Click", "Select", "Press" MUST be Playwright interaction actions (e.g. 'click'). Do NOT restart the flow with a 'goto' to the root URL mid-test. EXCEPTION - explicit IN-APP navigation steps ("navigate/go/return/head back to the <section>", "open the <section> page", "return to <page>"): emit a 'goto' ONLY when a concrete same-origin path for that destination is actually visible in the provided Steps or DOM Summary (e.g. an href/link already shown there). If no such path is available, emit a 'click' whose target is a role/link/button locator matching the destination wording (e.g. getByRole('link', {{ name: /<destination words>/i }})), and immediately follow it with an 'assertVisible' for an element that the NEXT step implies exists on the destination page. NEVER invent an exact visible-text label (e.g. "Back to products") that is not present in any provided DOM.
 5. ASSERTIONS: Use regex for assertions to avoid exact match failures (e.g., 'getByText(/Success|Thank you/i)'). For removed elements, use assertNotVisible. Do NOT invent custom 'Success notification' string matchers unless you use a valid selector. EVERY user step that verifies/checks/confirms/ensures/validates state (wording such as "Verify", "Confirm", "Ensure", "Check", "Validate", "should be/appear", "is visible/displayed", "loads", "is removed", "no longer", "disappears") MUST be represented by an assert* action - assertVisible or assertText for presence/state, assertNotVisible for removal/absence - and NEVER by a bare 'wait'. Do not drop, skip, or merge verification steps.
-6. VALID TYPES: goto, click, fill, wait, screenshot, assertText, assertVisible, assertNotVisible, select, hover.
-7. FILL ACTIONS: When generating a 'fill' action, you MUST provide the text to be typed in the 'value' field. NEVER leave 'value' null for a 'fill' action!
+6. VALID TYPES: goto, click, fill, wait, screenshot, assertText, assertVisible, assertNotVisible, assertUrl, assertEnabled, assertDisabled, press, select, hover. Use assertUrl (value = a substring or /regex/ of the expected address) to verify which page the user is on - NEVER try to verify the address with getByText. Use assertEnabled / assertDisabled for "button is enabled/disabled". Use press (value = key name such as Enter or Escape, selector optional) for keyboard steps. Use select for BOTH native dropdowns and custom dropdowns (role=combobox buttons): selector = the dropdown control, value = the option text to choose. Text that changes with the date, time of day or user data (greetings, day counts, dates, counters) MUST be matched with a regular expression, never an exact string.
+7. FILL ACTIONS: When generating a 'fill' action, you MUST provide the text to be typed in the 'value' field. NEVER leave 'value' null for a 'fill' action! CREDENTIALS: NEVER invent login details (no "test_username", "user@example.com", "password123"). When a step says to type the (test) username / email / login or the (test) password and the scenario text does not state the literal value, set value to the exact token __USERNAME__ for the username/email or __PASSWORD__ for the password; the runner substitutes the real values. If the scenario states the literal value, use that.
 8. INTENT TRACKING: Populate the 'assertion' field with the original natural language instruction to enable self-healing if the static selector fails.
 9. PLAYWRIGHT API STRICTNESS: Generated selectors MUST use valid Playwright Locator APIs ONLY. Do NOT chain native DOM element methods like .closest(), .querySelector(), .parentElement, etc., directly onto Playwright Locators. INVALID: getByText(/1/i).closest('span'). VALID: locator('span').filter({{ hasText: /1/i }}) or locator('..'). Always use the DOM context to target the correct semantic element (e.g., the actual cart badge) rather than arbitrarily finding any matching text.
 10. SEMANTIC STATE ASSERTIONS: Natural-language semantic verifications (e.g., "Verify login page loads successfully" or "Verify checkout overview page loads") MUST NOT be converted to literal text assertions like getByText(/login page loads successfully/i) unless that exact text literally exists in the DOM. Instead, inspect the DOM Selector Summary and derive the assertion by verifying the presence of ACTUAL elements that represent that state (e.g., getByRole('button', {{ name: /Login/i }}) or getByPlaceholder(/Username/i) for a login page). The 'assertion' field preserves the natural-language intent, but the 'selector' MUST target a REAL DOM element. ROLE TOLERANCE: only use a role-scoped locator (getByRole('heading'|'button'|'link'|...)) when the DOM Summary for that step CONFIRMS the element has that role/tag. If the destination page's DOM is NOT in the provided summary, or the tag is unknown, use a role-agnostic locator instead - getByText(/<words>/i) (matches any element) or a stable container/attribute - so the assertion does not fail merely because e.g. a title is a <span> rather than an <h1>.
 11. STRICT DOM-AWARE SELECTORS: NEVER infer an attribute like data-testid, placeholder, name, or aria-label merely because the natural-language field name sounds like one. For every interaction (fill, click, etc.) or state assertion, inspect the DOM Selector Summary for the CURRENT step. If the instruction says "Verify password field is visible", DO NOT blindly generate locator('[data-testid="password"]'). You MUST verify the exact attribute in the DOM. If the DOM shows <input data-test="password">, you MUST use locator('[data-test="password"]'). The selector must be derived EXPLICITLY from the DOM summary provided, prioritizing stable attributes (data-test, id, name). NOTE: data-test !== data-testid. Never use one if the DOM has the other.
+12. ORDER AND COMPLETENESS: emit the actions in EXACTLY the order the steps are written. A "Verify ..." step is an assertion at THAT position - never postpone or merge verifications to the end of the scenario, and never drop one. If one verify step names several items ("Verify the text A and the text B are visible"), emit one assertion per item right there. A step that tells the user to click / type / select must produce a click / fill / select action - never replace it with an assertion. For "If <control> is shown, click it" emit the click (the control is expected to be present).
+13. NEGATIVE CHECKS: "is not visible", "is no longer visible", "disappears", "is removed", "is not shown" -> assertNotVisible (never assertVisible).
+14. AMBIGUOUS NAMES: when one control's name is contained in another's (e.g. "Save" and "Save this message", "Add" and "Add provider"), target the exact control with an anchored name: getByRole('button', {{ name: /^Save$/i }}), and never use getByText(/Save/i).nth(0) / .first() to pick one of several matches. Use the step's own hints (position, "the one next to ...", "not the ...") to choose.
+15. CHOICES: "Select the <option> option under <group>" where the options are radio buttons, tabs, chips or segmented buttons -> click getByRole('radio', {{ name: /<option>/i }}) (or the matching role seen in the DOM). Use the select action only for real dropdowns (select / role=combobox).
 EXACT NEGATIVE EXAMPLES:
 Example 1 - Instruction: "Verify password field is visible." DOM: <input id="password" type="password"> -> INVALID: locator('[data-test="password"]') | VALID: locator('#password')
 Example 2 - Instruction: "Fill First Name." DOM: <input name="firstName"> -> INVALID: getByPlaceholder(/First Name/i) or locator('[data-test="firstName"]') | VALID: locator('input[name="firstName"]')
@@ -179,15 +183,40 @@ Steps JSON (Contains step descriptions and their corresponding DOM Summary):
              const mappedActions = generatedActions.map((a: any, index: number) => {
                  let finalActionType = a.actionType;
                  if (chunkIsContinuation && finalActionType === 'goto') {
-                     console.log(`[ScriptGenerationAgent] Stripping rogue goto action in continuation chunk: ${a.target}`);
-                     finalActionType = 'wait';
+                     // A goto in a later chunk is "rogue" only if the user never asked for it. When the
+                     // scenario text itself says to open that address (e.g. "Open https://site/care"), the
+                     // navigation is part of the scenario and MUST be kept - stripping it left every later
+                     // scenario running on whatever page the previous one ended on.
+                     const chunkText = (chunkSteps as any[]).map((x: any) => (typeof x === 'string' ? x : JSON.stringify(x))).join('\n').toLowerCase();
+                     const norm = (u: string) => String(u || '').toLowerCase().replace(/^https?:\/\//, '').replace(/\/+$/, '');
+                     const wanted = norm(a.target);
+                     const userAskedForIt = !!wanted && chunkText.replace(/https?:\/\//g, '').includes(wanted);
+                     if (!userAskedForIt) {
+                         console.log(`[ScriptGenerationAgent] Stripping rogue goto action in continuation chunk: ${a.target}`);
+                         finalActionType = 'wait';
+                     }
                  }
 
                  let rawSName = typeof a.scenarioName === 'string' ? a.scenarioName.trim() : "";
                  let assignedScenario = "";
                  let mappingSource = "";
 
-                 if (expectedScenarioCount === 1) {
+                 if (expectedScenarioCount === 0) {
+                     // The caller supplied no parseable "Scenario Name:" list to
+                     // enforce coverage against — this is every autonomous /
+                     // prompt / one-click run (OrchestratorAgent builds its
+                     // planReq as "Target:/Cases:/DOM Summary:", with no scenario
+                     // header). Without this branch the coverage gate below sees
+                     // `expectedScenarios = []`, marks EVERY generated action
+                     // "unmapped", and the whole run fails as
+                     // "ScriptGenerationAgent output is malformed or empty" even
+                     // though the model produced a perfectly good action list.
+                     // Accept the model's actions under a synthetic scenario so
+                     // the gate becomes a no-op; genuine emptiness is still
+                     // caught by the `allActions.length === 0` check at the end.
+                     assignedScenario = (rawSName || testName || 'Generated Scenario').trim();
+                     mappingSource = "no_expected_scenarios";
+                 } else if (expectedScenarioCount === 1) {
                      assignedScenario = expectedScenarios[0] || "";
                      mappingSource = "inferred_single_scenario";
                  } else {
@@ -219,7 +248,11 @@ Steps JSON (Contains step descriptions and their corresponding DOM Summary):
                      }
                  }
 
-                 if (assignedScenario && expectedScenarios.includes(assignedScenario)) {
+                 if (assignedScenario && (expectedScenarioCount === 0 || expectedScenarios.includes(assignedScenario))) {
+                     if (!(assignedScenario in scenarioActionCounts)) {
+                         scenarioActionCounts[assignedScenario] = 0;
+                         scenarioMappingSources[assignedScenario] = new Set<string>();
+                     }
                      scenarioActionCounts[assignedScenario] = (scenarioActionCounts[assignedScenario] || 0) + 1;
                      scenarioMappingSources[assignedScenario]?.add(mappingSource);
                      mappedActionsCount++;
