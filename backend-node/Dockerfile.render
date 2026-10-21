@@ -1,0 +1,23 @@
+# Production image for Render (NovaTest API + test worker).
+# The base image ships Chromium/Firefox/WebKit matched to Playwright 1.60.0 - keep this tag in step with the
+# "playwright" version in package.json.
+FROM mcr.microsoft.com/playwright:v1.60.0-noble
+
+# ffmpeg compresses the run recordings; xvfb gives headful/stealth mode a virtual display (headless ignores it).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+ENV NODE_ENV=production
+# Render injects PORT (default 10000); the app reads it. 8080 is only the local default.
+EXPOSE 8080
+
+CMD ["xvfb-run", "-a", "--server-args=-screen 0 1920x1080x24", "node", "dist/src/index.js"]

@@ -1,0 +1,6 @@
+# Linux build files must keep LF line endings (Render builds on Linux; CRLF breaks Dockerfile RUN lines)
+Dockerfile* text eol=lf
+**/Dockerfile* text eol=lf
+.dockerignore text eol=lf
+**/.dockerignore text eol=lf
+render.yaml text eol=lf

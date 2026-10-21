@@ -1,0 +1,49 @@
+# Render Blueprint: the NovaTest API + test worker (Docker). The frontend is hosted on Vercel (see DEPLOY_RENDER_VERCEL.md).
+services:
+  - type: web
+    name: novatest-api
+    runtime: docker
+    dockerfilePath: ./backend-node/Dockerfile.render
+    dockerContext: ./backend-node
+    region: singapore          # closest Render region to India; change if needed
+    plan: standard             # 2 GB RAM: headless Chromium + video need more than the 512 MB starter plan
+    healthCheckPath: /api/v1/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: QUEUE_NAMESPACE   # fixed name so queued runs survive redeploys (the default is the machine hostname)
+        value: masa-client
+      - key: WORKER_CONCURRENCY
+        value: "1"
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_MODEL_PLANNER
+        value: gpt-4o
+      - key: PROTECTED_ACTION_PATTERNS
+        value: end this cycle,mark as a loss,purchase .*,try pro free,send my story,change email,change password
+      # Secrets - paste the values in the Render dashboard when prompted (they are never stored in this file)
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: CI_API_KEY
+        sync: false
+      - key: DB_CREDENTIALS_ENCRYPTION_KEY
+        sync: false
+      - key: INTERNAL_PROXY_KEY
+        sync: false
+      - key: JIRA_BASE_URL
+        sync: false
+      - key: JIRA_EMAIL
+        sync: false
+      - key: JIRA_API_TOKEN
+        sync: false
+      - key: JIRA_PROJECT_KEY
+        sync: false
