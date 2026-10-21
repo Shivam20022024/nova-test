@@ -1,6 +1,5 @@
 import { Suspense } from 'react'
 import { Outlet } from 'react-router-dom'
-import { ContextHeader } from '../components/navigation/ContextHeader'
 import { Sidebar } from '../components/navigation/Sidebar'
 import { Topbar } from '../components/navigation/Topbar'
 import { RouteFade } from '../components/ui/RouteFade'
@@ -22,7 +21,6 @@ export default function AppLayout() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
-        <ContextHeader />
         <main className="flex-1 overflow-y-auto print:h-auto print:overflow-visible">
           <div className="relative mx-auto max-w-[1400px] px-4 py-6 md:px-8 md:py-8 print:max-w-none print:p-0">
             <div

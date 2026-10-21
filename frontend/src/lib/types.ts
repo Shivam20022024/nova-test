@@ -161,6 +161,21 @@ export type ExecutionLog = {
   visualRegressionData: string | null
   createdAt: string
   updatedAt: string
+  /** Run-source metadata. 'manual' on every run launched from the UI (the vast
+   *  majority); 'ci' on a run from POST /api/v1/ci/trigger or /simulate (with
+   *  the three commit fields below); 'jira' on a run that a bug raised in Jira
+   *  triggered (with the four jiraSource* fields below — see backend-node's
+   *  routes/jiraIntake.ts). */
+  triggeredBy?: 'manual' | 'ci' | 'jira'
+  commitSha?: string | null
+  branch?: string | null
+  prNumber?: string | null
+  /** Jira Intake — set only when `triggeredBy === 'jira'`. */
+  jiraSourceIssueKey?: string | null
+  jiraSourceReporter?: string | null
+  jiraSourceSummary?: string | null
+  /** Permalink to the result comment NovaTest posted back on the source issue. */
+  jiraResultCommentUrl?: string | null
   /** Traceability links — nullable; present only on runs launched with sprint
    *  context (or via "Run sprint"). `releaseId` predates the sprint feature. */
   releaseId?: string | null
@@ -221,8 +236,26 @@ export type DashboardSummary = {
     successRate: number
     avgDuration: number
   }
-  /** Web + mobile summed. avgDuration is omitted — averaging across two very
-   *  differently-shaped run types isn't a meaningful single number. */
+  /** Same shape, API Testing executions only (ApiExecution table). */
+  api: {
+    totalExecutions: number
+    passedCount: number
+    failedCount: number
+    selfHealingCount: number
+    successRate: number
+    avgDuration: number
+  }
+  /** Same shape, Database Testing executions only (DbTestExecution table). */
+  db: {
+    totalExecutions: number
+    passedCount: number
+    failedCount: number
+    selfHealingCount: number
+    successRate: number
+    avgDuration: number
+  }
+  /** Web + mobile + api + db summed. avgDuration is omitted — averaging
+   *  across such differently-shaped run types isn't a meaningful single number. */
   combined: {
     totalExecutions: number
     passedCount: number
@@ -234,7 +267,7 @@ export type DashboardSummary = {
 
 /** Which testing vertical produced a run — used to filter/badge the
  *  dashboard's recent-executions feed and its trend/summary stats. */
-export type RunSource = 'web' | 'mobile'
+export type RunSource = 'web' | 'mobile' | 'api' | 'db'
 
 export type ExecutionTrendPoint = {
   date: string
@@ -244,6 +277,13 @@ export type ExecutionTrendPoint = {
 
 export type BrowserDistributionEntry = {
   browser: string
+  count: number
+}
+
+/** Command Center's source-aware coverage donut — see api.ts's
+ *  getCoverageDistribution for what `label` means per source. */
+export type CoverageDistributionEntry = {
+  label: string
   count: number
 }
 
@@ -281,6 +321,16 @@ export type RecentExecutionRow = {
   /** Seconds. */
   duration: number
   startedAt: string | null
+  /** Set only on a run that came from routes/ci.ts's /trigger or /simulate, or
+   *  from Jira Intake — absent on every normal run, including all pre-existing
+   *  rows. */
+  triggeredBy?: 'ci' | 'jira'
+  commitSha?: string | null
+  branch?: string | null
+  prNumber?: string | null
+  /** Present only when `triggeredBy === 'jira'`. */
+  jiraSourceIssueKey?: string | null
+  jiraSourceReporter?: string | null
 }
 
 export type RecentExecutionFolder = {
@@ -340,6 +390,70 @@ export type JiraHealth = {
   authenticationStatus: string
   projectVerified: boolean
   availableProjects?: Array<{ key: string; name?: string }>
+}
+
+/* ── Jira Intake (bug raised in Jira → NovaTest run) ──────────────────────
+ * The inbound direction of the Jira integration. See backend-node's
+ * routes/jiraIntake.ts + services/jiraIntakeService.ts. Off per project until
+ * `enabled` is set. The password is never returned — `hasPassword` stands in. */
+
+export type JiraIntakeConfig = {
+  id: string
+  projectId: string
+  enabled: boolean
+  /** The Jira label that marks an issue for automated testing. */
+  triggerLabel: string
+  /** Used when the AI can't find a URL in the issue text itself. */
+  defaultTargetUrl: string | null
+  testUsername: string | null
+  /** True when a test password is stored (the value itself never leaves the server). */
+  hasPassword: boolean
+  defaultBrowsers: string[]
+  pollIntervalMinutes: number
+  postResultComment: 'always' | 'on_failure' | 'off'
+  addTestedLabel: boolean
+  minConfidence: 'medium' | 'high'
+  lastPolledAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type JiraIntakeIssueStatus = 'queued' | 'analyzing' | 'running' | 'done' | 'skipped' | 'error'
+
+/** The AI's structured reading of a Jira bug — stored on each JiraIntakeIssue. */
+export type JiraTestIntent = {
+  understood: string
+  targetUrl: string | null
+  targetUrlSource: 'issue' | 'none'
+  needsAuth: boolean
+  scenarios: Array<{ name: string; steps: string[]; expectedResult: string; reproducesReportedBug: boolean }>
+  focusAreas: string[]
+  outOfScope: string[]
+  confidence: 'high' | 'medium' | 'low'
+  missingInfo: string[]
+}
+
+export type JiraIntakeIssue = {
+  id: string
+  projectId: string
+  issueKey: string
+  status: JiraIntakeIssueStatus
+  reason: string | null
+  analysisJson: JiraTestIntent | null
+  executionIds: string[]
+  issueUpdatedAt: string | null
+  processedAt: string | null
+  createdAt: string
+}
+
+/** POST /api/v1/jira-intake/poll response. */
+export type JiraIntakePollSummary = {
+  projectId: string
+  found: number
+  queued: number
+  skipped: number
+  errors: number
+  details: Array<{ issueKey: string; outcome: string; reason?: string; executionIds?: string[] }>
 }
 
 /* ── Runs ─────────────────────────────────────────────────────────────── */
@@ -728,6 +842,12 @@ export type SprintResults = {
   }>
   adHocSummary: AdHocSummary
   adHocRuns: AdHocRun[]
+  mobileSummary: MobileRunSummary
+  mobileRuns: MobileRunLite[]
+  apiSummary: ApiDbRunSummary
+  apiRuns: ApiDbRunLite[]
+  dbSummary: ApiDbRunSummary
+  dbRuns: ApiDbRunLite[]
 }
 
 /** Runs stamped for a sprint but not tied to an assigned test case
@@ -744,6 +864,35 @@ export type AdHocRun = {
   reportPath: string
 }
 export type AdHocSummary = { total: number; passed: number; failed: number; running: number; other: number }
+
+/** Appium-engine test runs tagged to a sprint via mobile_executions.sprint_uuid —
+ *  the mobile side has no SprintTestCase-style assignment, so every one of
+ *  these is "ad hoc" from the web model's point of view. */
+export type MobileRunLite = {
+  executionId: number
+  testName: string | null
+  status: string
+  deviceId: number | null
+  startedAt: string | null
+  completedAt: string | null
+  durationMs: number | null
+  reportPath: string
+}
+export type MobileRunSummary = { total: number; passed: number; failed: number; running: number; review: number }
+
+/** API Testing / Database Testing runs tagged to a sprint via
+ *  ApiExecution.sprintId / DbTestExecution.sprintId — same "every run is
+ *  ad hoc" reasoning as MobileRunLite above. */
+export type ApiDbRunLite = {
+  executionId: string
+  testName: string | null
+  status: string
+  startedAt: string | null
+  completedAt: string | null
+  durationMs: number | null
+  reportPath: string
+}
+export type ApiDbRunSummary = { total: number; passed: number; failed: number; running: number }
 
 /** POST /api/v1/sprints/:id/run response */
 export type SprintRunResult = {
@@ -832,6 +981,9 @@ export type ProjectTraceability = {
       assigned: number; passed: number; failed: number; notRun: number; regressionCount: number
       new: number; carried: number
       adHocTotal: number; adHocPassed: number; adHocFailed: number
+      mobileTotal: number; mobilePassed: number; mobileFailed: number
+      apiTotal: number; apiPassed: number; apiFailed: number
+      dbTotal: number; dbPassed: number; dbFailed: number
     }
     sprints: Array<{
       id: string
@@ -851,6 +1003,196 @@ export type ProjectTraceability = {
       new: number
       carried: number
       adHoc: AdHocSummary
+      mobile: MobileRunSummary
+      api: ApiDbRunSummary
+      db: ApiDbRunSummary
     }>
   }>
 }
+
+/** Full evidence/failure detail for one execution — embedded only for a
+ *  FAILED test case/ad-hoc run inside a Sprint/Release/Project report; a
+ *  passed one has no `failureDetails`/`executionDetail` at all. */
+export type ReportExecutionDetail = {
+  executionId: string
+  status: ExecutionStatus
+  browser: string | null
+  testName: string | null
+  targetUrl: string | null
+  durationMs: number | null
+  createdAt: string
+  stepLogs: unknown[]
+  screenshots: Array<{ id: string; url: string; [key: string]: unknown }>
+  videos: Array<{ id: string; url: string; [key: string]: unknown }>
+  healingEvents: Array<{ id: string; originalSelector: string; healedSelector: string; success: boolean; [key: string]: unknown }>
+  reportPath: string
+}
+
+/** GET /api/v1/sprints/:id/report — same shape as SprintResults, plus full
+ *  failure detail on every failed test case/ad-hoc run. */
+export type SprintReport = Omit<SprintResults, 'testCases' | 'adHocRuns'> & {
+  testCases: Array<SprintResults['testCases'][number] & { failureDetails: ReportExecutionDetail[] }>
+  adHocRuns: Array<AdHocRun & { executionDetail: ReportExecutionDetail | null }>
+}
+
+/** GET /api/v1/releases/:id/report */
+export type ReleaseReport = {
+  release: Release
+  sprintCount: number
+  totals: { assigned: number; passed: number; failed: number; notRun: number; adHocTotal: number; adHocPassed: number; adHocFailed: number; mobileTotal: number; mobilePassed: number; mobileFailed: number; apiTotal: number; apiPassed: number; apiFailed: number; dbTotal: number; dbPassed: number; dbFailed: number }
+  sprints: SprintReport[]
+}
+
+/** GET /api/v1/projects/:id/report — the full consolidated report. */
+export type ProjectReport = {
+  project: { id: string; name: string }
+  generatedAt: string
+  releaseCount: number
+  totals: { assigned: number; passed: number; failed: number; notRun: number; adHocTotal: number; adHocPassed: number; adHocFailed: number; mobileTotal: number; mobilePassed: number; mobileFailed: number; apiTotal: number; apiPassed: number; apiFailed: number; dbTotal: number; dbPassed: number; dbFailed: number }
+  releases: ReleaseReport[]
+}
+
+/* ── API Testing & Database Testing ──────────────────────────────────────
+ * Two new, standalone test types with their own execution pipeline (see
+ * backend-node/src/queue/apiDbTestWorker.ts) — deliberately not part of the
+ * ExecutionLog/ExecutionStatus world above, so nothing here couples to it. */
+
+export type ApiAssertionType = 'status' | 'jsonPath' | 'header' | 'responseTime'
+export type ApiAssertionOperator = 'equals' | 'notEquals' | 'contains' | 'exists' | 'greaterThan' | 'lessThan'
+
+export type ApiAssertion = {
+  type: ApiAssertionType
+  path?: string
+  operator: ApiAssertionOperator
+  expected?: unknown
+}
+
+export type ApiVariableExtraction = {
+  name: string
+  from: 'body' | 'header' | 'status'
+  path?: string
+}
+
+export type ApiStep = {
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+  url: string
+  headers?: Record<string, string>
+  body?: unknown
+  assertions?: ApiAssertion[]
+  scenarioName?: string
+  extract?: ApiVariableExtraction[]
+}
+
+export type ApiDbTestStatus = 'QUEUED' | 'RUNNING' | 'PASSED' | 'FAILED'
+
+export type ApiDbStepLog = {
+  action: string
+  status: string
+  time: string
+  durationMs?: number
+  details?: string
+  value?: string
+}
+
+/** Row shape from GET /api/v1/api-tests (list). */
+export type ApiExecutionSummary = {
+  id: string
+  name: string
+  status: ApiDbTestStatus
+  startedAt: string | null
+  completedAt: string | null
+  durationMs: number | null
+  createdAt: string
+  releaseId: string | null
+  sprintId: string | null
+}
+
+/** GET /api/v1/api-tests/:id */
+export type ApiExecutionDetail = ApiExecutionSummary & {
+  projectId: string
+  steps: ApiStep[]
+  variables: Record<string, unknown> | null
+  stepLogs: ApiDbStepLog[] | null
+  error: string | null
+  jiraTicketId: string | null
+  jiraTicketUrl: string | null
+}
+
+export type DbEngine = 'postgres' | 'mysql' | 'mongodb'
+
+export type DbConnection = {
+  id: string
+  projectId: string
+  name: string
+  engine: DbEngine
+  host: string
+  port: number
+  database: string
+  username: string
+  ssl: boolean
+  createdAt: string
+}
+
+export type DbAssertionType =
+  | 'rowCount' | 'cellValue' | 'jsonPath' | 'schemaColumns'
+  | 'columnNotNull' | 'columnUnique' | 'regexMatch' | 'dataType' | 'dateValid' | 'aggregate'
+export type DbAssertionOperator = 'equals' | 'notEquals' | 'contains' | 'exists' | 'greaterThan' | 'lessThan'
+export type DbAggregateFunction = 'sum' | 'avg' | 'count' | 'min' | 'max'
+
+export type DbAssertion = {
+  type: DbAssertionType
+  path?: string
+  operator: DbAssertionOperator
+  expected?: unknown
+  function?: DbAggregateFunction
+}
+
+export type DbVariableExtraction = { name: string; path: string }
+
+export type MongoOperation = 'find' | 'aggregate' | 'countDocuments' | 'insertOne' | 'insertMany' | 'updateOne' | 'updateMany' | 'deleteOne' | 'deleteMany'
+
+export type DbStep = {
+  connectionId?: string // stamped server-side from the run request; not required from the UI
+  scenarioName?: string
+  query?: string
+  params?: unknown[]
+  collection?: string
+  operation?: MongoOperation
+  filter?: unknown
+  pipeline?: unknown[]
+  document?: unknown
+  update?: unknown
+  assertions?: DbAssertion[]
+  extract?: DbVariableExtraction[]
+  commit?: boolean
+}
+
+/** Row shape from GET /api/v1/db-tests (list). */
+export type DbTestExecutionSummary = {
+  id: string
+  name: string
+  status: ApiDbTestStatus
+  connectionId: string | null
+  startedAt: string | null
+  completedAt: string | null
+  durationMs: number | null
+  createdAt: string
+  releaseId: string | null
+  sprintId: string | null
+}
+
+/** GET /api/v1/db-tests/:id */
+export type DbTestExecutionDetail = DbTestExecutionSummary & {
+  projectId: string
+  steps: DbStep[]
+  variables: Record<string, unknown> | null
+  stepLogs: ApiDbStepLog[] | null
+  error: string | null
+  jiraTicketId: string | null
+  jiraTicketUrl: string | null
+}
+
+/** GET /api/v1/db-connections/:id/schema */
+export type DbSchemaColumn = { name: string; type: string; nullable?: boolean }
+export type DbSchemaTable = { name: string; columns: DbSchemaColumn[] }
+export type DbSchema = { tables: DbSchemaTable[] }

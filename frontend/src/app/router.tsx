@@ -35,6 +35,13 @@ const ReleaseReadinessPage = lazy(() => import('../pages/app/reports/ReleaseRead
 const ReleaseComparisonPage = lazy(() => import('../pages/app/reports/ReleaseComparisonPage'))
 const IntegrationsPage = lazy(() => import('../pages/app/integrations/IntegrationsPage'))
 const SettingsPage = lazy(() => import('../pages/app/settings/SettingsPage'))
+const ApiTestingPage = lazy(() => import('../pages/app/api-testing/ApiTestingPage'))
+const ApiExecutionsPage = lazy(() => import('../pages/app/api-testing/ApiExecutionsPage'))
+const ApiExecutionReportPage = lazy(() => import('../pages/app/api-testing/ApiExecutionReportPage'))
+const DbConnectionsPage = lazy(() => import('../pages/app/db-testing/DbConnectionsPage'))
+const DbTestingPage = lazy(() => import('../pages/app/db-testing/DbTestingPage'))
+const DbExecutionsPage = lazy(() => import('../pages/app/db-testing/DbExecutionsPage'))
+const DbExecutionReportPage = lazy(() => import('../pages/app/db-testing/DbExecutionReportPage'))
 
 export default function AppRouter() {
   return (
@@ -98,6 +105,13 @@ export default function AppRouter() {
         <Route path="reports/release-comparison" element={<ReleaseComparisonPage />} />
         <Route path="integrations" element={<IntegrationsPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="api-testing" element={<ApiTestingPage />} />
+        <Route path="api-testing/executions" element={<ApiExecutionsPage />} />
+        <Route path="api-testing/executions/:id/report" element={<ApiExecutionReportPage />} />
+        <Route path="db-testing" element={<DbTestingPage />} />
+        <Route path="db-testing/connections" element={<DbConnectionsPage />} />
+        <Route path="db-testing/executions" element={<DbExecutionsPage />} />
+        <Route path="db-testing/executions/:id/report" element={<DbExecutionReportPage />} />
         <Route
           path="*"
           element={<NotFoundPage homeHref="/app/command-center" homeLabel="Back to Command Center" />}

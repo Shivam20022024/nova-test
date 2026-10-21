@@ -1,7 +1,17 @@
 import { supabase } from './supabase'
 import type {
+  ApiExecutionDetail,
+  ApiExecutionSummary,
+  ApiStep,
   BrowserDistributionEntry,
+  CoverageDistributionEntry,
   DashboardSummary,
+  DbConnection,
+  DbEngine,
+  DbSchema,
+  DbStep,
+  DbTestExecutionDetail,
+  DbTestExecutionSummary,
   DiscoveredFlow,
   ExcelImportResult,
   ExecutionDetail,
@@ -13,6 +23,9 @@ import type {
   HealingEventStatus,
   JiraConfig,
   JiraHealth,
+  JiraIntakeConfig,
+  JiraIntakeIssue,
+  JiraIntakePollSummary,
   MobileApplication,
   MobileBatchJob,
   MobileCapabilities,
@@ -29,14 +42,17 @@ import type {
   MobileTest,
   MobileUploadResult,
   Project,
+  ProjectReport,
   ProjectTraceability,
   QueuedRun,
   RecentExecutionItem,
   Release,
   ReleaseComparisonEntry,
   ReleaseReadiness,
+  ReleaseReport,
   Sprint,
   SprintAssignment,
+  SprintReport,
   SprintResults,
   SprintRunResult,
   TestCase,
@@ -77,6 +93,14 @@ function readToken(): string | null {
     // Private-browsing modes can throw on storage access.
     return null
   }
+}
+
+/** Command Center's date-range filter — `yyyy-mm-dd` strings, either end optional. */
+export type DateRangeParams = { startDate?: string; endDate?: string }
+
+function appendDateRange(params: URLSearchParams, range?: DateRangeParams) {
+  if (range?.startDate) params.set('startDate', range.startDate)
+  if (range?.endDate) params.set('endDate', range.endDate)
 }
 
 export const api = {
@@ -229,25 +253,51 @@ export const api = {
 
   /* -- Dashboard ------------------------------------------------------- */
 
-  getDashboardSummary(projectId?: string) {
-    const q = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
+  getDashboardSummary(projectId?: string, range?: DateRangeParams) {
+    const params = new URLSearchParams()
+    if (projectId) params.set('projectId', projectId)
+    appendDateRange(params, range)
+    const q = params.toString() ? `?${params.toString()}` : ''
     return this.request<DashboardSummary>(`/api/v1/dashboard/summary${q}`)
   },
 
-  getExecutionTrend(days: number = 7, projectId?: string) {
-    const q = projectId ? `&projectId=${encodeURIComponent(projectId)}` : ''
-    return this.request<ExecutionTrendPoint[]>(`/api/v1/dashboard/execution-trend?days=${days}${q}`)
+  getExecutionTrend(days: number = 7, projectId?: string, range?: DateRangeParams, allTime = false) {
+    const params = new URLSearchParams()
+    if (allTime) {
+      params.set('allTime', 'true')
+    } else {
+      params.set('days', String(days))
+    }
+    if (projectId) params.set('projectId', projectId)
+    appendDateRange(params, range)
+    return this.request<ExecutionTrendPoint[]>(`/api/v1/dashboard/execution-trend?${params.toString()}`)
   },
 
-  getBrowserDistribution(projectId?: string) {
-    const q = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
+  getBrowserDistribution(projectId?: string, range?: DateRangeParams) {
+    const params = new URLSearchParams()
+    if (projectId) params.set('projectId', projectId)
+    appendDateRange(params, range)
+    const q = params.toString() ? `?${params.toString()}` : ''
     return this.request<BrowserDistributionEntry[]>(`/api/v1/dashboard/browser-distribution${q}`)
   },
 
-  getRecentExecutions(limit: number = 25, projectId?: string) {
-    const q = projectId ? `&projectId=${encodeURIComponent(projectId)}` : ''
+  /** Command Center's source-aware coverage donut — see routes/dashboard.ts's
+   * /coverage-distribution for what each `source` value actually breaks down. */
+  getCoverageDistribution(source: 'web' | 'mobile' | 'api' | 'db' | 'all', projectId?: string, range?: DateRangeParams) {
+    const params = new URLSearchParams()
+    params.set('source', source)
+    if (projectId) params.set('projectId', projectId)
+    appendDateRange(params, range)
+    return this.request<CoverageDistributionEntry[]>(`/api/v1/dashboard/coverage-distribution?${params.toString()}`)
+  },
+
+  getRecentExecutions(limit: number = 25, projectId?: string, range?: DateRangeParams) {
+    const params = new URLSearchParams()
+    params.set('limit', String(limit))
+    if (projectId) params.set('projectId', projectId)
+    appendDateRange(params, range)
     return this.request<RecentExecutionItem[]>(
-      `/api/v1/dashboard/recent-executions?limit=${limit}${q}`,
+      `/api/v1/dashboard/recent-executions?${params.toString()}`,
     )
   },
 
@@ -285,6 +335,12 @@ export const api = {
 
   getRelease(id: string) {
     return this.request<Release>(`/api/v1/releases/${id}`)
+  },
+
+  /** The full, downloadable Release -> Sprint report, with failure
+   *  detail/evidence nested in for every failed test case. */
+  getReleaseReport(id: string) {
+    return this.request<ReleaseReport>(`/api/v1/releases/${id}/report`)
   },
 
   updateRelease(
@@ -350,6 +406,13 @@ export const api = {
     return this.request<SprintResults>(`/api/v1/sprints/${sprintId}/results`)
   },
 
+  /** Same as getSprintResults, plus full step/screenshot/self-heal detail
+   *  for every failed test case and ad-hoc run — the data source for the
+   *  downloadable Sprint report. */
+  getSprintReport(sprintId: string) {
+    return this.request<SprintReport>(`/api/v1/sprints/${sprintId}/report`)
+  },
+
   runSprint(sprintId: string, opts?: { testRunIds?: string[]; browsers?: string[] }) {
     return this.request<SprintRunResult>(`/api/v1/sprints/${sprintId}/run`, {
       method: 'POST',
@@ -357,9 +420,10 @@ export const api = {
     })
   },
 
-  /** Run one test case directly — no sprint / release / assignment change.
+  /** Run one test case directly — no assignment change, but the release/sprint
+   *  (when given) is stamped onto the resulting execution for traceability.
    *  Returns 202 with the new executionId; poll it via getRunDetails. */
-  runTestCase(testRunId: string, opts?: { browser?: string }) {
+  runTestCase(testRunId: string, opts?: { browser?: string; releaseId?: string; sprintId?: string }) {
     return this.request<{
       message: string
       executionId: string
@@ -384,6 +448,12 @@ export const api = {
 
   getProjectTraceability(projectId: string) {
     return this.request<ProjectTraceability>(`/api/v1/projects/${projectId}/traceability`)
+  },
+
+  /** The full, downloadable Project -> Release -> Sprint report, with
+   *  failure detail/evidence nested in for every failed test case. */
+  getProjectReport(projectId: string) {
+    return this.request<ProjectReport>(`/api/v1/projects/${projectId}/report`)
   },
 
   /* -- Executions ------------------------------------------------------ */
@@ -596,6 +666,56 @@ export const api = {
     )
   },
 
+  /* -- CI/CD trigger (backend-node's routes/ci.ts) ---------------------- */
+
+  /** Whether CI_API_KEY is configured server-side — never returns the key itself. */
+  getCiHealth() {
+    return this.request<{ configured: boolean }>('/api/v1/ci/health')
+  },
+
+  /** Session-authenticated stand-in for a real CI pipeline call, for the
+   *  Integrations page's "Simulate a CI push" demo button. */
+  simulateCiTrigger(payload: { project_id?: string; suite_id?: string; browsers?: string[] }) {
+    return this.request<{ message: string; executionIds: string[]; source: { branch: string; commitSha: string } }>(
+      '/api/v1/ci/simulate',
+      { method: 'POST', body: JSON.stringify(payload) },
+    )
+  },
+
+  /* -- Jira Intake (a bug raised in Jira → a NovaTest run) --------------
+   * Inbound half of the Jira integration, backend routes/jiraIntake.ts.
+   * Separate from the outbound Jira config above (getJiraConfig etc). */
+  jiraIntake: {
+    /** null until a config row exists for the project. */
+    getConfig(projectId: string) {
+      return api.request<JiraIntakeConfig | null>(
+        `/api/v1/jira-intake/config?projectId=${encodeURIComponent(projectId)}`,
+      )
+    },
+    saveConfig(payload: Partial<Omit<JiraIntakeConfig, 'id' | 'hasPassword' | 'lastPolledAt' | 'createdAt' | 'updatedAt'>> & {
+      projectId: string
+      /** send a new password, '' to clear, or omit / '********' to keep the stored one */
+      testPassword?: string
+    }) {
+      return api.request<JiraIntakeConfig>('/api/v1/jira-intake/config', {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      })
+    },
+    /** The "Check Jira now" button — polls immediately and returns what it did. */
+    pollNow(projectId: string) {
+      return api.request<JiraIntakePollSummary>('/api/v1/jira-intake/poll', {
+        method: 'POST',
+        body: JSON.stringify({ projectId }),
+      })
+    },
+    listIssues(projectId: string) {
+      return api.request<JiraIntakeIssue[]>(
+        `/api/v1/jira-intake/issues?projectId=${encodeURIComponent(projectId)}`,
+      )
+    },
+  },
+
   /* -- Mobile testing (Android) ---------------------------------------- */
 
   /**
@@ -700,6 +820,7 @@ export const api = {
       applicationId?: number
       deviceId?: number
       releaseId?: string
+      sprintId?: string
     }) {
       const form = new FormData()
       if (input.text) form.append('text', input.text)
@@ -707,6 +828,7 @@ export const api = {
       if (input.applicationId != null) form.append('application_id', String(input.applicationId))
       if (input.deviceId != null) form.append('device_id', String(input.deviceId))
       if (input.releaseId) form.append('release_id', input.releaseId)
+      if (input.sprintId) form.append('sprint_id', input.sprintId)
       return api.request<MobileGenerateResult>('/api/v1/mobile/tests/generate', {
         method: 'POST',
         body: form,
@@ -848,6 +970,99 @@ export const api = {
       if (!path) return null
       if (/^https?:\/\//i.test(path)) return path
       return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`
+    },
+  },
+
+  /* -- API Testing -------------------------------------------------------
+   * Own queue/table (backend-node/src/routes/apiTests.ts), separate from
+   * Web Testing's execution path. Authoring reuses the existing, already
+   * working /api/v1/ai generation routes unchanged. */
+  apiTesting: {
+    listExecutions(projectId: string) {
+      return api.request<ApiExecutionSummary[]>(`/api/v1/api-tests?projectId=${encodeURIComponent(projectId)}`)
+    },
+    getExecution(id: string) {
+      return api.request<ApiExecutionDetail>(`/api/v1/api-tests/${id}`)
+    },
+    run(payload: { projectId: string; name: string; steps: ApiStep[]; variables?: Record<string, unknown>; releaseId?: string; sprintId?: string }) {
+      return api.request<{ executionId: string }>('/api/v1/api-tests/run', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+    },
+    generateFromPrompt(payload: { test_name?: string; prompt: string }) {
+      return api.request<{ steps: ApiStep[] }>('/api/v1/ai/generate-api-suite', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+    },
+    importSpec(payload: { spec_type: 'openapi' | 'postman' | 'curl'; content: string }) {
+      return api.request<{ steps: ApiStep[] }>('/api/v1/ai/import-api-spec', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+    },
+    createJiraBug(executionId: string) {
+      return api.request<{ key?: string; url?: string }>(`/api/v1/jira/create-from-api-execution/${executionId}`, { method: 'POST' })
+    },
+  },
+
+  /* -- Database Testing ----------------------------------------------------
+   * Own queue/table (backend-node/src/routes/dbTests.ts). Connection
+   * management and authoring reuse existing, already working routes
+   * (routes/dbConnections.ts, /api/v1/ai/generate-db-*) unchanged. */
+  dbTesting: {
+    listConnections(projectId: string) {
+      return api.request<DbConnection[]>(`/api/v1/db-connections?projectId=${encodeURIComponent(projectId)}`)
+    },
+    createConnection(payload: { projectId: string; name: string; engine: DbEngine; host: string; port: number; database: string; username: string; password: string; ssl?: boolean }) {
+      return api.request<DbConnection>('/api/v1/db-connections', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+    },
+    deleteConnection(id: string) {
+      return api.request<null>(`/api/v1/db-connections/${id}`, { method: 'DELETE' })
+    },
+    testConnection(id: string) {
+      return api.request<{ success: boolean; message?: string; error?: string }>(`/api/v1/db-connections/${id}/test`, { method: 'POST' })
+    },
+    getSchema(id: string) {
+      return api.request<DbSchema>(`/api/v1/db-connections/${id}/schema`)
+    },
+
+    listExecutions(projectId: string) {
+      return api.request<DbTestExecutionSummary[]>(`/api/v1/db-tests?projectId=${encodeURIComponent(projectId)}`)
+    },
+    getExecution(id: string) {
+      return api.request<DbTestExecutionDetail>(`/api/v1/db-tests/${id}`)
+    },
+    run(payload: { projectId: string; name: string; connectionId: string; steps: DbStep[]; variables?: Record<string, unknown>; releaseId?: string; sprintId?: string }) {
+      return api.request<{ executionId: string }>('/api/v1/db-tests/run', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+    },
+    generateFromPrompt(payload: { test_name?: string; prompt: string; connection_id: string }) {
+      return api.request<{ steps: DbStep[] }>('/api/v1/ai/generate-db-suite', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+    },
+    generateFromSchema(payload: { test_name?: string; connection_id: string; focus?: string }) {
+      return api.request<{ steps: DbStep[]; schema: DbSchema }>('/api/v1/ai/generate-db-suite-from-schema', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+    },
+    generateTestData(payload: { connection_id: string; table: string; rowCount?: number; style?: string }) {
+      return api.request<{ rows: unknown[] }>('/api/v1/ai/generate-db-test-data', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+    },
+    createJiraBug(executionId: string) {
+      return api.request<{ key?: string; url?: string }>(`/api/v1/jira/create-from-db-execution/${executionId}`, { method: 'POST' })
     },
   },
 }

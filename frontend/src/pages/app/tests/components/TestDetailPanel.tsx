@@ -10,8 +10,9 @@ import { Skeleton } from '../../../../components/ui/Skeleton'
 import { ExecutionStatusBadge } from '../../execution/components/ExecutionStatusBadge'
 import { AssignmentSourceBadge } from '../../releases/statusBadges'
 import { useToast } from '../../../../contexts/ToastContext'
+import { isAllProjects, useData } from '../../../../contexts/DataContext'
 import { api } from '../../../../lib/api'
-import type { TestCase, TestCaseTraceability } from '../../../../lib/types'
+import type { Release, TestCase, TestCaseTraceability } from '../../../../lib/types'
 
 const BROWSERS = ['chromium', 'firefox', 'webkit', 'edge'] as const
 
@@ -65,11 +66,20 @@ type TestDetailPanelProps = {
 export function TestDetailPanel({ test, onEdit, onDelete, deleting }: TestDetailPanelProps) {
   const navigate = useNavigate()
   const { triggerToast } = useToast()
+  const { activeProject } = useData()
   const steps = Array.isArray(test.steps) ? (test.steps as StepLike[]) : []
   const [tab, setTab] = useState<'definition' | 'history'>('definition')
   const [runOpen, setRunOpen] = useState(false)
   const [browser, setBrowser] = useState<string>('chromium')
   const [running, setRunning] = useState(false)
+  const [releaseId, setReleaseId] = useState('')
+  const [sprintId, setSprintId] = useState('')
+
+  const releases = useSWR<Release[]>(
+    runOpen && activeProject && !isAllProjects(activeProject) ? ['releases', activeProject.id] : null,
+    () => api.listReleases(activeProject!.id),
+  )
+  const sprints = useSWR(releaseId ? ['release-sprints', releaseId] : null, () => api.listReleaseSprints(releaseId))
 
   const blockReason = useMemo(() => runBlockReason(test.steps), [test.steps])
 
@@ -80,9 +90,13 @@ export function TestDetailPanel({ test, onEdit, onDelete, deleting }: TestDetail
   )
 
   async function runTest() {
+    if (!releaseId || !sprintId) {
+      triggerToast('Select a release and sprint before running.', true)
+      return
+    }
     setRunning(true)
     try {
-      const res = await api.runTestCase(test.id, { browser })
+      const res = await api.runTestCase(test.id, { browser, releaseId, sprintId })
       triggerToast(`Queued run of "${res.testName}".`)
       setRunOpen(false)
       navigate(`/app/execution/${res.executionId}`)
@@ -132,7 +146,11 @@ export function TestDetailPanel({ test, onEdit, onDelete, deleting }: TestDetail
           className="px-3 py-1.5 text-xs"
           disabled={blockReason != null}
           title={blockReason ?? undefined}
-          onClick={() => setRunOpen(true)}
+          onClick={() => {
+            setReleaseId('')
+            setSprintId('')
+            setRunOpen(true)
+          }}
         >
           <Play size={13} aria-hidden="true" /> Run Test
         </Button>
@@ -265,14 +283,40 @@ export function TestDetailPanel({ test, onEdit, onDelete, deleting }: TestDetail
               </option>
             ))}
           </Select>
+          <Select
+            label="Release"
+            value={releaseId}
+            onChange={(e) => {
+              setReleaseId(e.target.value)
+              setSprintId('')
+            }}
+            helperText="Required — create new ones from the Releases page."
+          >
+            <option value="">Select a release…</option>
+            {(releases.data ?? []).map((r) => (
+              <option key={r.id} value={r.id}>{r.name}</option>
+            ))}
+          </Select>
+          <Select
+            label="Sprint"
+            value={sprintId}
+            onChange={(e) => setSprintId(e.target.value)}
+            disabled={!releaseId}
+            helperText={releaseId ? 'Required — attributes this run to a sprint for traceability.' : 'Pick a release first.'}
+          >
+            <option value="">Select a sprint…</option>
+            {(sprints.data ?? []).map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </Select>
           <p className="text-xs text-muted">
-            Runs this test case on its own — no sprint or release is created or changed. A new execution is recorded in history.
+            Runs this test case on its own — no assignment change, but the run is recorded against the sprint you pick.
           </p>
           <div className="flex justify-end gap-2">
             <Button variant="outline" marker={false} onClick={() => setRunOpen(false)}>
               Cancel
             </Button>
-            <Button marker={false} disabled={running || blockReason != null} onClick={() => void runTest()}>
+            <Button marker={false} disabled={running || blockReason != null || !releaseId || !sprintId} onClick={() => void runTest()}>
               {running ? 'Starting…' : 'Run Test'}
             </Button>
           </div>

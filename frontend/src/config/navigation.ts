@@ -24,6 +24,11 @@ export type NavIconKey =
   | 'mobile-author'
   | 'mobile-executions'
   | 'compatibility'
+  | 'api-testing'
+  | 'api-executions'
+  | 'db-connections'
+  | 'db-testing'
+  | 'db-executions'
   | 'healing'
   | 'reports'
   | 'traceability'
@@ -49,27 +54,42 @@ export const navGroups: NavGroup[] = [
     items: [
       { label: 'Command Center', href: '/app/command-center', icon: 'command-center' },
       { label: 'Projects', href: '/app/projects', icon: 'projects' },
+      { label: 'Releases', href: '/app/releases', icon: 'releases' },
     ],
   },
   {
     label: 'Web Testing',
     items: [
-      { label: 'App Discovery', href: '/app/application', icon: 'application' },
       { label: 'Author Tests', href: '/app/one-click-test', icon: 'one-click-test' },
       { label: 'Code Generator', href: '/app/code-generator', icon: 'code-generator' },
       { label: 'Test Suites', href: '/app/tests', icon: 'tests' },
-      { label: 'Releases', href: '/app/releases', icon: 'releases' },
       { label: 'Executions', href: '/app/execution', icon: 'executions' },
+      { label: 'App Discovery', href: '/app/application', icon: 'application' },
     ],
   },
   {
-    label: 'Application Testing',
+    label: 'Mobile Application Testing',
     items: [
       { label: 'Apps', href: '/app/mobile/apps', icon: 'mobile-apps' },
       { label: 'Devices', href: '/app/mobile/devices', icon: 'mobile-devices' },
       { label: 'Author Tests', href: '/app/mobile/author', icon: 'mobile-author' },
       { label: 'Executions', href: '/app/mobile/executions', icon: 'mobile-executions' },
       { label: 'Compatibility', href: '/app/mobile/compatibility', icon: 'compatibility' },
+    ],
+  },
+  {
+    label: 'API Testing',
+    items: [
+      { label: 'Author Tests', href: '/app/api-testing', icon: 'api-testing' },
+      { label: 'Executions', href: '/app/api-testing/executions', icon: 'api-executions' },
+    ],
+  },
+  {
+    label: 'Database Testing',
+    items: [
+      { label: 'Connections', href: '/app/db-testing/connections', icon: 'db-connections' },
+      { label: 'Author Tests', href: '/app/db-testing', icon: 'db-testing' },
+      { label: 'Executions', href: '/app/db-testing/executions', icon: 'db-executions' },
     ],
   },
   {

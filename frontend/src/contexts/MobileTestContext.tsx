@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { api } from '../lib/api'
 import { isAllProjects, useData } from './DataContext'
@@ -58,6 +58,30 @@ export function MobileTestProvider({ children }: { children: ReactNode }) {
   const [applicationId, setApplicationId] = useState<number | null>(null)
   const [deviceId, setDeviceId] = useState<number | null>(null)
 
+  // Devices are a shared, global, adb-discovered resource (not project data —
+  // GET /devices takes no project filter at all) — but an on-demand emulator
+  // idles itself out after a while, so "no device" is a routine, recurring
+  // state, not just a first-run one. Rather than make every project/page
+  // re-teach the user to click "Start an emulator," this auto-provisions one
+  // the moment a device-less reload is seen (when the backend reports the
+  // capability at all) and polls briefly until it comes online — no page in
+  // the Application Testing vertical needs its own copy of this logic.
+  const autoProvisionInFlight = useRef(false)
+
+  function pollForDevice(attempts = 24) {
+    if (attempts <= 0) return
+    setTimeout(() => {
+      api.mobile
+        .listDevices()
+        .then((rows) => {
+          setDevices(rows)
+          if (rows.length === 0) pollForDevice(attempts - 1)
+          else autoProvisionInFlight.current = false
+        })
+        .catch(() => pollForDevice(attempts - 1))
+    }, 5000)
+  }
+
   const reload = useCallback(async () => {
     if (!projectId) return
     setLoading(true)
@@ -85,7 +109,18 @@ export function MobileTestProvider({ children }: { children: ReactNode }) {
 
       api.mobile
         .listDevices()
-        .then((rows) => setDevices(rows))
+        .then((rows) => {
+          setDevices(rows)
+          if (rows.length === 0 && caps.features.emulator_auto_start && !autoProvisionInFlight.current) {
+            autoProvisionInFlight.current = true
+            api.mobile
+              .provisionDevice()
+              .then(() => pollForDevice())
+              .catch(() => {
+                autoProvisionInFlight.current = false
+              })
+          }
+        })
         .catch(() => setDevices([]))
     } catch (error) {
       // The engine is a separate process; if it is down the rest of the product

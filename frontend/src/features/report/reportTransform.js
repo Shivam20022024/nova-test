@@ -157,7 +157,7 @@ export function normalizeExecutionReport(execution, aiReport = null) {
   let duplicateActionsRemovedCount = 0;
   let finalStepCount = 0;
 
-  const VALID_ACTIONS = new Set(["goto", "click", "fill", "select", "check", "uncheck", "hover", "press", "assertVisible", "assertText", "assertValue", "upload", "screenshot", "wait"]);
+  const VALID_ACTIONS = new Set(["goto", "click", "fill", "select", "check", "uncheck", "hover", "press", "assertVisible", "assertText", "assertValue", "assertNotVisible", "assertUrl", "assertEnabled", "assertDisabled", "upload", "screenshot", "wait"]);
 
   /* ── Telemetry-authoritative step helpers (report accuracy layer) ──────────
    * An "executable step" is a real user-facing test action. Meta / framework /
@@ -167,7 +167,7 @@ export function normalizeExecutionReport(execution, aiReport = null) {
    * wait, not a step. */
   const EXECUTABLE_ACTIONS = new Set([
     "goto", "click", "fill", "type", "select", "check", "uncheck", "hover", "press",
-    "assertvisible", "asserttext", "assertvalue", "assertnotvisible", "upload", "wait",
+    "assertvisible", "asserttext", "assertvalue", "assertnotvisible", "asserturl", "assertenabled", "assertdisabled", "upload", "wait",
   ]);
   const META_ACTIONS = new Set([
     "parse_json", "heal", "execution", "execution_result", "accessibility", "security",
@@ -542,9 +542,14 @@ export function normalizeExecutionReport(execution, aiReport = null) {
   const executableStepTotal = totalSteps;
 
   // Pass rate = passed executable steps / total executable steps.
-  const passRate = executableStepTotal > 0
+  const stepPassRate = executableStepTotal > 0
     ? Number(((passedSteps / executableStepTotal) * 100).toFixed(2))
     : (execution.status === "PASSED" || execution.status === "COMPLETED" ? 100 : 0);
+  // The headline PASS RATE is the share of SCENARIOS that passed, so it always agrees with the
+  // PASSED / FAILED scenario counts shown next to it. Step-level success is reported separately.
+  const passRate = (tests.length > 0 && scenarioCount > 0)
+    ? Number(((passedScenarios / scenarioCount) * 100).toFixed(2))
+    : stepPassRate;
 
   console.log(`[STEP_PASS_RATE]\ntotalSteps=${totalSteps}\npassedSteps=${passedSteps}\nfailedSteps=${failedSteps}\nskippedSteps=${skippedSteps}\npassRate=${passRate}%`);
   console.log(`[REPORT_AGGREGATION]\nscenarios=${scenarioCount}\npassedScenarios=${passedScenarios}\nfailedScenarios=${failedScenarios}\nskippedScenarios=${skippedScenarios}\nsteps=${totalSteps}\npassedSteps=${passedSteps}\nfailedSteps=${failedSteps}\npassRate=${passRate}%`);
@@ -649,7 +654,15 @@ export function normalizeExecutionReport(execution, aiReport = null) {
   let decisionReasons = [];
   let applicationQuality = "EVALUATED";
 
-  if (isBlockedExecution) {
+  const isInProgress = /^(RUNNING|QUEUED|PENDING|STARTED|IN_PROGRESS)$/.test(rawStatusU);
+
+  if (isInProgress) {
+    decision = "PENDING";
+    decisionTitle = "RUN IN PROGRESS — NO RELEASE DECISION YET";
+    riskLevel = "UNKNOWN";
+    applicationQuality = "NOT EVALUATED";
+    decisionReasons.push("The run has not finished, so no result can be given yet. Refresh this report when it completes.");
+  } else if (isBlockedExecution) {
     decision = "BLOCKED";
     decisionTitle = executionClassification.type === "ANTI_BOT_BLOCK"
       ? "EXECUTION BLOCKED — ANTI-BOT / WAF"
@@ -666,7 +679,18 @@ export function normalizeExecutionReport(execution, aiReport = null) {
     );
     const appDefect = executionClassification.type === "APPLICATION_FAILURE";
     if (!appDefect) applicationQuality = "INCONCLUSIVE — failures not confirmed as application defects; see Failure Details";
-    if (hasCriticalFlowFailed || failedScenarios > Math.ceil(scenarioCount / 3)) {
+    if (!appDefect) {
+      // No failure is a confirmed application defect: the failures come from the test itself (selectors,
+      // page state, timing, scenario sequencing). That is NOT evidence against the release, and it is not
+      // evidence for it either - so the report says "not certified" instead of "release blocked".
+      const verifiedOk = passedScenarios;
+      decision = "INCONCLUSIVE";
+      decisionTitle = "NOT CERTIFIED — TEST ISSUES TO RESOLVE";
+      riskLevel = "MEDIUM";
+      decisionReasons.push(`${failedScenarios} of ${scenarioCount} scenario${scenarioCount > 1 ? "s" : ""} did not complete, but none of the failures is confirmed as an application defect — they come from the test run itself (${executionClassification.type.replace(/_/g, " ").toLowerCase()}).`);
+      decisionReasons.push(`${verifiedOk} scenario${verifiedOk === 1 ? "" : "s"} passed. The remaining flows were not validated, so no release verdict can be given for them.`);
+      decisionReasons.push("Fix the listed test issues (or the scenario wording) and re-run before relying on this result.");
+    } else if (hasCriticalFlowFailed || failedScenarios > Math.ceil(scenarioCount / 3)) {
       decision = "BLOCKED";
       decisionTitle = "RELEASE BLOCKED";
       riskLevel = "HIGH";
@@ -888,9 +912,11 @@ export function normalizeExecutionReport(execution, aiReport = null) {
         });
       });
   }
-  healing.filter((h) => !h.success).forEach((h) => {
+  // A selector that could not be healed is usually the SAME element as a failed step listed above; do not list it twice.
+  const alreadyListed = new Set(developerActions.map((a) => String(a.failedElement || "").replace(/\s+/g, " ").trim()));
+  healing.filter((h) => !h.success && !alreadyListed.has(String(h.originalSelector || "").replace(/\s+/g, " ").trim())).forEach((h) => {
     developerActions.push({
-      priority: "HIGH",
+      priority: "MEDIUM",
       scenario: h.testName,
       page: targetUrl || "Not available",
       failedElement: h.originalSelector,
@@ -1043,7 +1069,7 @@ export function normalizeExecutionReport(execution, aiReport = null) {
     detObservations.push({
       type: "SUCCESS",
       title: "All Scenarios Passed",
-      description: `${passedScenarios} of ${scenarioCount} scenario(s) passed. ${passedSteps} of ${executableStepTotal} executable step(s) succeeded (${passRate}%).`,
+      description: `${passedScenarios} of ${scenarioCount} scenario(s) passed. ${passedSteps} of ${executableStepTotal} executable step(s) succeeded (${stepPassRate}%).`,
       evidence: "",
     });
   }
@@ -1096,7 +1122,14 @@ export function normalizeExecutionReport(execution, aiReport = null) {
   }
 
   const seenObsTitles = new Set();
-  let observations = [...detObservations, ...llmObservations].filter((o) => {
+  // AI-written observations are narrative, not evidence. When failures exist but none is a confirmed application
+  // defect, the AI's "application has significant issues / DOM instability / failure rate" style warnings would
+  // contradict the verified classification, so only its neutral (SUCCESS / INFO) items are kept.
+  const noConfirmedAppDefect = failedScenarios > 0 && executionClassification.type !== "APPLICATION_FAILURE";
+  const llmObservationsKept = noConfirmedAppDefect
+    ? llmObservations.filter((o) => /^(SUCCESS|INFO)$/i.test(String(o.type || "")))
+    : llmObservations;
+  let observations = [...detObservations, ...llmObservationsKept].filter((o) => {
     const k = String(o.title || "").toLowerCase().trim();
     if (!k || seenObsTitles.has(k)) return false;
     seenObsTitles.add(k);
@@ -1113,9 +1146,10 @@ export function normalizeExecutionReport(execution, aiReport = null) {
     const parts = [];
     parts.push(`${passedScenarios} of ${scenarioCount} scenario(s) completed successfully.`);
     if (failedScenarios > 0) {
-      const names = failures.map((f) => f.scenario).slice(0, 3).join(", ");
+      const allNames = failures.map((f) => f.scenario);
+      const names = allNames.slice(0, 12).map((n) => String(n).replace(/^Scenario\s*\d+\s*:\s*/i, "")).join("; ") + (allNames.length > 12 ? `; +${allNames.length - 12} more` : "");
       parts.push(`${failedScenarios} scenario(s) encountered execution failures${names ? ` (${names})` : ""}.`);
-      parts.push(`${passedSteps} of ${executableStepTotal} executable steps passed (${passRate}%).`);
+      parts.push(`${passedSteps} of ${executableStepTotal} executable steps passed (${stepPassRate}%).`);
       if (partiallyPassedScenarios > 0) parts.push(`${partiallyPassedScenarios} scenario(s) partially completed before failing.`);
     } else {
       parts.push(`All ${executableStepTotal} executable steps passed.`);
@@ -1145,9 +1179,13 @@ export function normalizeExecutionReport(execution, aiReport = null) {
   if (recommendations.length === 0) {
     recommendations.push("Suite is performing cleanly. Maintain stable selector attributes (id / data-test) on interactive elements.");
   }
-  (aiReport?.recommendations || []).forEach((r) => {
-    if (r && !recommendations.includes(r)) recommendations.push(r);
-  });
+  if (noConfirmedAppDefect) {
+    recommendations.unshift("Resolve the test issues listed below (they come from the test run, not from a confirmed application defect) and re-run to obtain a release verdict.");
+  } else {
+    (aiReport?.recommendations || []).forEach((r) => {
+      if (r && !recommendations.includes(r)) recommendations.push(r);
+    });
+  }
 
   return {
     metadata: {
@@ -1173,14 +1211,16 @@ export function normalizeExecutionReport(execution, aiReport = null) {
     summary: {
       healthScore: calculatedHealth,
       aiConfidence: aiReport?.ai_confidence_score ?? 96,
-      interactionSuccessRate: passRate,
-      domStability: aiReport?.dom_stability || (failedScenarios > 0 ? "Medium" : "High"),
+      interactionSuccessRate: stepPassRate,
+      // "DOM stability" is an AI opinion; when the failures are test-side it says nothing about the application.
+      domStability: noConfirmedAppDefect ? "Not assessed" : (aiReport?.dom_stability || (failedScenarios > 0 ? "Medium" : "High")),
       totalTests: scenarioCount, // Used as 'SCENARIOS EXECUTED' or 'TEST DATA EXECUTED' in UI
       passedCount: passedScenarios,
       failedCount: failedScenarios,
       skippedCount: skippedScenarios,
       partiallyPassedCount: partiallyPassedScenarios,
       passRate,
+      stepPassRate,
       totalSteps, // executable steps: passedSteps + failedSteps + skippedSteps
       passedSteps,
       failedSteps,
@@ -1245,7 +1285,8 @@ export function normalizeExecutionReport(execution, aiReport = null) {
       observations,
       recommendations,
       narrative: aiReport?.ai_summary || null,
-      detectedIssues: aiReport?.detected_issues || [],
+      // Free-text AI findings (vision / console guesses) are unverified; hide them unless an application defect is confirmed.
+      detectedIssues: noConfirmedAppDefect ? [] : (aiReport?.detected_issues || []),
       screenshotAnalysis: aiReport?.screenshot_analysis || null,
       markdownReport: aiReport?.markdown_report || null,
       reason: aiReport?.reason || null,

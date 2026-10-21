@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
+import useSWR from 'swr'
 import { Button } from '../../../../components/ui/Button'
 import { Chip } from '../../../../components/ui/Chip'
 import { Input } from '../../../../components/ui/Input'
@@ -7,7 +8,8 @@ import { Modal } from '../../../../components/ui/Modal'
 import { Select } from '../../../../components/ui/Select'
 import { Textarea } from '../../../../components/ui/Textarea'
 import { BROWSERS, DEVICES } from '../../../../config/execution'
-import type { TestSuite } from '../../../../lib/types'
+import { api } from '../../../../lib/api'
+import type { Release, TestSuite } from '../../../../lib/types'
 
 export type RunConfig = {
   testName: string
@@ -16,6 +18,8 @@ export type RunConfig = {
   browsers: string[]
   devices: string[]
   steps: unknown[]
+  releaseId: string
+  sprintId: string
 }
 
 type RunTestsModalProps = {
@@ -23,6 +27,8 @@ type RunTestsModalProps = {
   onClose: () => void
   suites: TestSuite[]
   defaultSuiteId: string | null
+  /** Scopes the Release/Sprint pickers — the same project the suites belong to. */
+  projectId: string
   submitting: boolean
   onSubmitRun: (config: RunConfig) => void
 }
@@ -40,6 +46,7 @@ export function RunTestsModal({
   onClose,
   suites,
   defaultSuiteId,
+  projectId,
   submitting,
   onSubmitRun,
 }: RunTestsModalProps) {
@@ -49,7 +56,12 @@ export function RunTestsModal({
   const [browsers, setBrowsers] = useState<string[]>(['chromium'])
   const [devices, setDevices] = useState<string[]>(['Desktop'])
   const [stepsText, setStepsText] = useState('[]')
+  const [releaseId, setReleaseId] = useState('')
+  const [sprintId, setSprintId] = useState('')
   const [error, setError] = useState<string | null>(null)
+
+  const releases = useSWR<Release[]>(open && projectId ? ['releases', projectId] : null, () => api.listReleases(projectId))
+  const sprints = useSWR(releaseId ? ['release-sprints', releaseId] : null, () => api.listReleaseSprints(releaseId))
 
   function toggle(list: string[], setList: (next: string[]) => void, value: string) {
     setList(list.includes(value) ? list.filter((item) => item !== value) : [...list, value])
@@ -68,6 +80,10 @@ export function RunTestsModal({
     }
     if (devices.length === 0) {
       setError('Select at least one device.')
+      return
+    }
+    if (!releaseId || !sprintId) {
+      setError('Select a release and sprint before running.')
       return
     }
 
@@ -89,6 +105,8 @@ export function RunTestsModal({
       browsers,
       devices,
       steps,
+      releaseId,
+      sprintId,
     })
   }
 
@@ -157,6 +175,34 @@ export function RunTestsModal({
           </div>
         </div>
 
+        <Select
+          label="Release"
+          value={releaseId}
+          onChange={(event) => {
+            setReleaseId(event.target.value)
+            setSprintId('')
+          }}
+          helperText="Required — create new ones from the Releases page."
+        >
+          <option value="">Select a release…</option>
+          {(releases.data ?? []).map((r) => (
+            <option key={r.id} value={r.id}>{r.name}</option>
+          ))}
+        </Select>
+
+        <Select
+          label="Sprint"
+          value={sprintId}
+          onChange={(event) => setSprintId(event.target.value)}
+          disabled={!releaseId}
+          helperText={releaseId ? 'Required — attributes this run to a sprint for traceability.' : 'Pick a release first.'}
+        >
+          <option value="">Select a sprint…</option>
+          {(sprints.data ?? []).map((s) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </Select>
+
         <Textarea
           label="Steps (JSON array)"
           rows={6}
@@ -176,7 +222,7 @@ export function RunTestsModal({
           <Button variant="outline" marker={false} onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit" disabled={submitting}>
+          <Button type="submit" disabled={submitting || !releaseId || !sprintId}>
             {submitting ? 'Queueing…' : 'Run tests'}
           </Button>
         </div>

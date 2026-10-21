@@ -33,7 +33,7 @@ function triggerBrowserDownload(blob: Blob, filename: string) {
 }
 
 /**
- * Raw JSON dump of everything the report page shows — the mobile equivalent
+ * Raw JSON dump of everything the report page shows - the mobile equivalent
  * of Web Testing's `generateReportJson` in reportExport.js, minus the
  * normalization step (there's no AI-generated report object to normalize;
  * this is the engine's own recorded data as-is).
@@ -63,7 +63,7 @@ async function getNovalantisLogoDataUrl(): Promise<string | null> {
 }
 
 /** Same never-throw contract as web's fetchImageDataUrl: evidence lives on
- *  Supabase Storage, which can be briefly unreachable or CORS-blocked — a
+ *  Supabase Storage, which can be briefly unreachable or CORS-blocked - a
  *  missing screenshot must degrade to "not embedded", never break the PDF. */
 async function fetchImageDataUrl(url: string | null): Promise<string | null> {
   if (!url) return null
@@ -85,7 +85,7 @@ async function fetchImageDataUrl(url: string | null): Promise<string | null> {
 type RGB = readonly [number, number, number]
 
 /**
- * A thin, stateful drawing layer over jsPDF — the same primitives web's PDF
+ * A thin, stateful drawing layer over jsPDF - the same primitives web's PDF
  * builds by hand in reportExport.js (numbered section titles, KPI card grid,
  * page-break-aware cursor, vector status dot instead of a Unicode glyph
  * jsPDF's built-in font can't render), packaged as a small class so the
@@ -199,7 +199,7 @@ class PdfLayout {
  * generateReportPdf (reportExport.js): cover page with logo + release
  * decision hero + KPI strip + table of contents, then a running header/
  * footer, section-numbered body, and embedded evidence images rather than
- * bare links. No AI narrative section (mobile has none to render) — the
+ * bare links. No AI narrative section (mobile has none to render) - the
  * executive summary is the same deterministic text the on-screen report
  * shows, built by mobileReportData.ts so the two never drift apart.
  */
@@ -275,7 +275,7 @@ export async function downloadMobileReportPdf(data: MobileReportData): Promise<v
   doc.setFontSize(10)
   setColor(doc.setTextColor.bind(doc), c.inkMuted)
   const generatedAt = new Date().toLocaleString()
-  doc.text(`Execution #${execution.id}  •  Generated ${generatedAt}`, margin, 54)
+  doc.text(`Execution #${execution.id} - Generated ${generatedAt}`, margin, 54)
 
   layout.y = 76
 
@@ -286,7 +286,7 @@ export async function downloadMobileReportPdf(data: MobileReportData): Promise<v
   doc.setFontSize(13)
   const titleLines = doc.splitTextToSize(testName, contentWidth - 10).slice(0, 1)
   doc.setFontSize(8.5)
-  const appDeviceLine = `${application?.package_name ?? 'Unknown app'}  •  ${device?.model ?? device?.serial ?? 'Unknown device'}${device?.android_version ? ` (Android ${device.android_version})` : ''}`
+  const appDeviceLine = `${application?.package_name ?? 'Unknown app'} - ${device?.model ?? device?.serial ?? 'Unknown device'}${device?.android_version ? ` (Android ${device.android_version})` : ''}`
   const identityH = 15 + 7
 
   setColor(doc.setFillColor.bind(doc), c.panelBg)
@@ -307,12 +307,12 @@ export async function downloadMobileReportPdf(data: MobileReportData): Promise<v
   layout.y = identityTop + identityH + 8
 
   // Decision hero
-  const decisionTitle = isPassed ? 'AI RELEASE DECISION: PASSED' : 'AI RELEASE DECISION: FAILED — INVESTIGATE'
+  const decisionTitle = isPassed ? 'AI RELEASE DECISION: PASSED' : 'AI RELEASE DECISION: FAILED - INVESTIGATE'
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(14)
   const decisionTitleLines = doc.splitTextToSize(decisionTitle, contentWidth - 18)
   doc.setFontSize(8)
-  const heroDetail = `Step Pass Rate: ${scorecard.stepPassRate}%   •   Evidence Coverage: ${scorecard.evidenceCoverage}%   •   Self-Healed: ${healing.length}`
+  const heroDetail = `Step Pass Rate: ${scorecard.stepPassRate}% - Evidence Coverage: ${scorecard.evidenceCoverage}% - Self-Healed: ${healing.length}`
   const heroDetailLines = doc.splitTextToSize(heroDetail, contentWidth - 12)
   const heroH = 10 + decisionTitleLines.length * 6 + 6 + heroDetailLines.length * 4 + 4
 
@@ -341,7 +341,7 @@ export async function downloadMobileReportPdf(data: MobileReportData): Promise<v
     { label: 'Steps', value: steps.length, color: c.ink },
     { label: 'Passed', value: steps.filter((s) => s.status === 'PASSED' || s.status === 'HEALED').length, color: c.emerald },
     { label: 'Failed', value: steps.filter((s) => s.status === 'FAILED' || s.status === 'BLOCKED').length, color: c.rose },
-    { label: 'Duration', value: execution.duration_ms != null ? `${(execution.duration_ms / 1000).toFixed(1)}s` : '—', color: c.ink },
+    { label: 'Duration', value: execution.duration_ms != null ? `${(execution.duration_ms / 1000).toFixed(1)}s` : '-', color: c.ink },
   ])
 
   // Run details + TOC columns
@@ -362,7 +362,7 @@ export async function downloadMobileReportPdf(data: MobileReportData): Promise<v
   const runDetailRows: Array<[string, string]> = [
     ['Application', application?.package_name ?? 'Unknown'],
     ['Device', device?.model ?? device?.serial ?? 'Unknown'],
-    ['Started At', execution.started_at ? new Date(execution.started_at).toLocaleString() : '—'],
+    ['Started At', execution.started_at ? new Date(execution.started_at).toLocaleString() : '-'],
     ['Self-Healed Locators', String(healing.length)],
     ['Environment', execution.environment ?? 'DEV'],
   ]
@@ -429,12 +429,12 @@ export async function downloadMobileReportPdf(data: MobileReportData): Promise<v
     margin: { left: margin, right: margin },
     head: [['Field', 'Value']],
     body: [
-      ['Application', application?.package_name ?? '—'],
-      ['Version', application?.versions?.[0]?.version_name ?? '—'],
-      ['SDK range', `${application?.versions?.[0]?.min_sdk ?? '?'}–${application?.versions?.[0]?.target_sdk ?? '?'}`],
-      ['Device', device?.model ?? device?.serial ?? '—'],
-      ['Android version', `${device?.android_version ?? '—'} (API ${device?.api_level ?? '?'})`],
-      ['Environment', `${execution.environment ?? 'DEV'}${device?.is_emulator ? ' · emulator' : ''}`],
+      ['Application', application?.package_name ?? '-'],
+      ['Version', application?.versions?.[0]?.version_name ?? '-'],
+      ['SDK range', `${application?.versions?.[0]?.min_sdk ?? '?'}-${application?.versions?.[0]?.target_sdk ?? '?'}`],
+      ['Device', device?.model ?? device?.serial ?? '-'],
+      ['Android version', `${device?.android_version ?? '-'} (API ${device?.api_level ?? '?'})`],
+      ['Environment', `${execution.environment ?? 'DEV'}${device?.is_emulator ? ' - emulator' : ''}`],
     ],
     styles: { fontSize: 8.5, textColor: [...c.inkSoft] },
     headStyles: { fillColor: [...c.panelBg], textColor: [...c.ink], fontStyle: 'bold' },
@@ -449,12 +449,19 @@ export async function downloadMobileReportPdf(data: MobileReportData): Promise<v
     body: steps.map((step) => [
       String(step.step_index),
       step.action,
-      step.resolved_locator?.value ?? step.locator?.value ?? '—',
+      step.resolved_locator?.value ?? step.locator?.value ?? '-',
       step.status,
-      step.duration_ms != null ? `${step.duration_ms}ms` : '—',
+      step.duration_ms != null ? `${step.duration_ms}ms` : '-',
     ]),
-    styles: { fontSize: 8, textColor: [...c.inkSoft] },
+    styles: { fontSize: 8, textColor: [...c.inkSoft], valign: 'top', overflow: 'linebreak' },
     headStyles: { fillColor: [...c.panelBg], textColor: [...c.ink], fontStyle: 'bold' },
+    columnStyles: {
+      0: { cellWidth: 10 },
+      1: { cellWidth: 26 },
+      2: { cellWidth: 'auto' },
+      3: { cellWidth: 20 },
+      4: { cellWidth: 20 },
+    },
     didParseCell: (cellData) => {
       if (cellData.column.index === 3 && cellData.section === 'body') {
         const status = String(cellData.cell.raw)
@@ -473,13 +480,20 @@ export async function downloadMobileReportPdf(data: MobileReportData): Promise<v
       head: [['Step', 'Original locator', 'Replacement', 'Confidence', 'Status']],
       body: healing.map((h) => [
         String(h.step_index),
-        h.original_locator?.value ?? '—',
-        h.replacement_locator?.value ?? h.candidate_locators?.[0]?.locator?.value ?? '—',
-        h.confidence != null ? `${Math.round(h.confidence)}%` : '—',
+        h.original_locator?.value ?? '-',
+        h.replacement_locator?.value ?? h.candidate_locators?.[0]?.locator?.value ?? '-',
+        h.confidence != null ? `${Math.round(h.confidence)}%` : '-',
         h.status,
       ]),
-      styles: { fontSize: 8, textColor: [...c.inkSoft] },
+      styles: { fontSize: 8, textColor: [...c.inkSoft], valign: 'top', overflow: 'linebreak' },
       headStyles: { fillColor: [...c.panelBg], textColor: [...c.ink], fontStyle: 'bold' },
+      columnStyles: {
+        0: { cellWidth: 12 },
+        1: { cellWidth: 'auto' },
+        2: { cellWidth: 'auto' },
+        3: { cellWidth: 22 },
+        4: { cellWidth: 22 },
+      },
     })
     layout.y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 10
   }
@@ -498,13 +512,13 @@ export async function downloadMobileReportPdf(data: MobileReportData): Promise<v
         try {
           doc.addImage(dataUrl, 'PNG', x, layout.y, thumbW, thumbH)
         } catch {
-          // Corrupt/unsupported image data — leave the slot blank rather than fail the export.
+          // Corrupt/unsupported image data - leave the slot blank rather than fail the export.
         }
       }
       doc.setFont('helvetica', 'normal')
       doc.setFontSize(6.5)
       setColor(doc.setTextColor.bind(doc), c.inkMuted)
-      doc.text(`step ${screenshots[idx]?.step_index ?? '—'}`, x, layout.y + thumbH + 3)
+      doc.text(`step ${screenshots[idx]?.step_index ?? '-'}`, x, layout.y + thumbH + 3)
     })
     layout.y += thumbH + 10
   }
@@ -516,10 +530,10 @@ export async function downloadMobileReportPdf(data: MobileReportData): Promise<v
     head: [['Field', 'Value']],
     body: [
       ['Execution ID', String(execution.id)],
-      ['Execution UID', execution.execution_uid ?? '—'],
+      ['Execution UID', execution.execution_uid ?? '-'],
       ['Raw status', execution.status],
-      ['Started', execution.started_at ?? '—'],
-      ['Completed', execution.completed_at ?? '—'],
+      ['Started', execution.started_at ?? '-'],
+      ['Completed', execution.completed_at ?? '-'],
       ['Recorded steps', String(steps.length)],
     ],
     styles: { fontSize: 8.5, textColor: [...c.inkSoft] },
@@ -536,7 +550,7 @@ export async function downloadMobileReportPdf(data: MobileReportData): Promise<v
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(7.5)
     setColor(doc.setTextColor.bind(doc), c.inkMuted)
-    doc.text('NOVATEST AI — MOBILE TEST INTELLIGENCE REPORT', margin, 9)
+    doc.text('NOVATEST AI - MOBILE TEST INTELLIGENCE REPORT', margin, 9)
     doc.text(`Page ${i - 1} of ${pageCount - 1}`, layout.pageWidth - margin, 9, { align: 'right' })
   }
 

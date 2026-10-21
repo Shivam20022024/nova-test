@@ -150,6 +150,24 @@ export default function ExecutionDetailPage() {
               <SprintReleaseChips sprintId={data.sprintId} releaseId={data.releaseId} />
             </>
           )}
+          {data.triggeredBy === 'ci' && (
+            <>
+              <span className="text-line">·</span>
+              <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 font-mono text-xs text-accent-deep">
+                Triggered via CI
+                {data.branch ? ` · ${data.branch}` : ''}
+                {data.commitSha ? ` · ${data.commitSha.slice(0, 7)}` : ''}
+              </span>
+            </>
+          )}
+          {data.triggeredBy === 'jira' && (
+            <>
+              <span className="text-line">·</span>
+              <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 font-mono text-xs text-accent-deep">
+                Raised in Jira{data.jiraSourceIssueKey ? ` · ${data.jiraSourceIssueKey}` : ''}
+              </span>
+            </>
+          )}
         </>
       }
       badges={<ExecutionStatusBadge status={data.status} />}
@@ -185,7 +203,8 @@ export default function ExecutionDetailPage() {
       tabs={tabs}
       activeTab={activeTab}
       onTabChange={setActiveTab}
-    >
+      tabContent={
+        <>
       {activeTab === 'steps' && <ExecutionSteps steps={steps} />}
 
       {activeTab === 'live' && (
@@ -337,6 +356,8 @@ export default function ExecutionDetailPage() {
           </Card>
         </div>
       )}
-    </DetailLayout>
+        </>
+      }
+    />
   )
 }

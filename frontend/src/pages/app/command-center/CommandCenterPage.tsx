@@ -7,6 +7,7 @@ import { Chip } from '../../../components/ui/Chip'
 import { EmptyState } from '../../../components/ui/EmptyState'
 import { ErrorState } from '../../../components/ui/ErrorState'
 import { PageHeader } from '../../../components/ui/PageHeader'
+import { Select } from '../../../components/ui/Select'
 import { Skeleton } from '../../../components/ui/Skeleton'
 import { StatTile } from '../../../components/ui/StatTile'
 import { DonutChart } from '../../../components/charts/DonutChart'
@@ -16,7 +17,7 @@ import { useAppShell } from '../../../app/providers'
 import { useData } from '../../../contexts/DataContext'
 import { api } from '../../../lib/api'
 import type {
-  BrowserDistributionEntry,
+  CoverageDistributionEntry,
   DashboardSummary,
   ExecutionTrendPoint,
   RecentExecutionItem,
@@ -30,7 +31,28 @@ const SOURCE_FILTERS: Array<{ id: SourceFilter; label: string }> = [
   { id: 'all', label: 'All' },
   { id: 'web', label: 'Web' },
   { id: 'mobile', label: 'Mobile' },
+  { id: 'api', label: 'API' },
+  { id: 'db', label: 'Database' },
 ]
+
+type RangePreset = '' | '7' | '15' | '30' | '90' | 'custom'
+
+const RANGE_PRESETS: Array<{ id: RangePreset; label: string }> = [
+  { id: '', label: 'All time' },
+  { id: '7', label: 'Last 7 days' },
+  { id: '15', label: 'Last 15 days' },
+  { id: '30', label: 'Last 30 days' },
+  { id: '90', label: 'Last 90 days' },
+  { id: 'custom', label: 'Custom range' },
+]
+
+/** yyyy-mm-dd, in the browser's local timezone (matches <input type="date">). */
+function toDateInputValue(d: Date): string {
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
 
 /** Matches the previous dashboard: telemetry refreshes on a 30s cadence. */
 const REFRESH_MS = 30_000
@@ -44,6 +66,17 @@ const BROWSER_COLORS = [
   'var(--color-flaky)',
   'var(--color-pass)',
 ]
+
+/** Card title + row label for the coverage donut, keyed by the active
+ * Show: filter — see routes/dashboard.ts's /coverage-distribution for what
+ * each source's breakdown actually represents. */
+const COVERAGE_CARD_META: Record<SourceFilter, { title: string; unit: string }> = {
+  all: { title: 'Testing coverage', unit: 'runs' },
+  web: { title: 'Browser coverage', unit: 'runs' },
+  mobile: { title: 'Platform coverage', unit: 'runs' },
+  api: { title: 'Method coverage', unit: 'requests' },
+  db: { title: 'Engine coverage', unit: 'runs' },
+}
 
 function DashboardSkeleton() {
   return (
@@ -67,28 +100,63 @@ export default function CommandCenterPage() {
   const { activeProject, scopedProjectId } = useData()
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
 
+  // Command Center's date-range filter. Default '' = no selection = all-time
+  // data, unfiltered — exactly as it behaved before this filter existed.
+  const [rangePreset, setRangePreset] = useState<RangePreset>('')
+  const [customStart, setCustomStart] = useState('')
+  const [customEnd, setCustomEnd] = useState('')
+
+  const dateRange = useMemo(() => {
+    if (rangePreset === '') return undefined
+    if (rangePreset === 'custom') {
+      if (!customStart && !customEnd) return undefined
+      return { startDate: customStart || undefined, endDate: customEnd || undefined }
+    }
+    const days = Number(rangePreset)
+    const end = new Date()
+    const start = new Date()
+    start.setDate(start.getDate() - (days - 1))
+    return { startDate: toDateInputValue(start), endDate: toDateInputValue(end) }
+  }, [rangePreset, customStart, customEnd])
+
+  const isAllTime = rangePreset === ''
+  const trendDays = isAllTime ? TREND_DAYS : rangePreset !== 'custom' ? Number(rangePreset) : TREND_DAYS
+
+  const trendRangeLabel = useMemo(() => {
+    if (isAllTime) return 'All time'
+    if (rangePreset === 'custom') {
+      if (dateRange?.startDate && dateRange?.endDate) return `${dateRange.startDate} → ${dateRange.endDate}`
+      if (dateRange?.startDate) return `Since ${dateRange.startDate}`
+      if (dateRange?.endDate) return `Through ${dateRange.endDate}`
+      return 'Custom range'
+    }
+    return `Last ${trendDays} days`
+  }, [isAllTime, rangePreset, trendDays, dateRange])
+
   // scopedProjectId is undefined for "All Projects", which the backend reads as
-  // "no filter". It is part of each key so switching project refetches.
+  // "no filter". It, and the active date range, are part of each key so
+  // switching project or range refetches.
   const scope = scopedProjectId ?? 'all'
+  const rangeKey = `${dateRange?.startDate ?? ''}:${dateRange?.endDate ?? ''}`
 
   const summary = useSWR<DashboardSummary>(
-    ['dashboard-summary', scope],
-    () => api.getDashboardSummary(scopedProjectId),
+    ['dashboard-summary', scope, rangeKey],
+    () => api.getDashboardSummary(scopedProjectId, dateRange),
     { refreshInterval: REFRESH_MS },
   )
   const trend = useSWR<ExecutionTrendPoint[]>(
-    ['dashboard-trend', scope],
-    () => api.getExecutionTrend(TREND_DAYS, scopedProjectId),
+    ['dashboard-trend', scope, rangeKey],
+    () => api.getExecutionTrend(trendDays, scopedProjectId, dateRange, isAllTime),
     { refreshInterval: REFRESH_MS },
   )
-  const browsers = useSWR<BrowserDistributionEntry[]>(
-    ['dashboard-browsers', scope],
-    () => api.getBrowserDistribution(scopedProjectId),
+  const browsers = useSWR<CoverageDistributionEntry[]>(
+    ['dashboard-coverage', scope, sourceFilter, rangeKey],
+    () => api.getCoverageDistribution(sourceFilter, scopedProjectId, dateRange),
     { refreshInterval: REFRESH_MS },
   )
   const recent = useSWR<RecentExecutionItem[]>(
-    ['dashboard-recent', scope],
-    () => api.getRecentExecutions(RECENT_LIMIT, scopedProjectId),
+    ['dashboard-recent', scope, rangeKey],
+    () => api.getRecentExecutions(RECENT_LIMIT, scopedProjectId, dateRange),
     { refreshInterval: REFRESH_MS },
   )
 
@@ -109,12 +177,14 @@ export default function CommandCenterPage() {
   const browserSlices = useMemo<DonutSlice[]>(
     () =>
       (browsers.data ?? []).map((entry, index) => ({
-        label: entry.browser,
+        label: entry.label,
         value: entry.count,
         color: BROWSER_COLORS[index % BROWSER_COLORS.length],
       })),
     [browsers.data],
   )
+
+  const coverageMeta = COVERAGE_CARD_META[sourceFilter]
 
   function refreshAll() {
     void Promise.all([summary.mutate(), trend.mutate(), browsers.mutate(), recent.mutate()])
@@ -130,6 +200,8 @@ export default function CommandCenterPage() {
   const viewStats = useMemo(() => {
     if (!summary.data) return null
     if (sourceFilter === 'mobile') return summary.data.mobile
+    if (sourceFilter === 'api') return summary.data.api
+    if (sourceFilter === 'db') return summary.data.db
     if (sourceFilter === 'all') return { ...summary.data.combined, avgDuration: null as number | null }
     return summary.data
   }, [summary.data, sourceFilter])
@@ -161,13 +233,58 @@ export default function CommandCenterPage() {
         }
       />
 
-      <div className="mb-6 flex flex-wrap items-center gap-2">
-        <span className="text-xs font-medium text-muted">Show:</span>
+      <div className="mb-4 flex flex-wrap items-center gap-2.5">
+        <span className="text-sm font-medium text-muted">Show:</span>
         {SOURCE_FILTERS.map((filter) => (
-          <Chip key={filter.id} active={sourceFilter === filter.id} onClick={() => setSourceFilter(filter.id)}>
+          <Chip
+            key={filter.id}
+            active={sourceFilter === filter.id}
+            onClick={() => setSourceFilter(filter.id)}
+            className="!px-4 !py-2 !text-sm !font-medium"
+          >
             {filter.label}
           </Chip>
         ))}
+      </div>
+
+      <div className="mb-6 flex flex-wrap items-end gap-3">
+        <div className="w-44">
+          <Select
+            label="Date range"
+            value={rangePreset}
+            onChange={(e) => setRangePreset(e.target.value as RangePreset)}
+          >
+            {RANGE_PRESETS.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label}
+              </option>
+            ))}
+          </Select>
+        </div>
+        {rangePreset === 'custom' && (
+          <>
+            <div className="w-40">
+              <label className="mb-1.5 block text-sm font-medium text-ink">Start date</label>
+              <input
+                type="date"
+                value={customStart}
+                onChange={(e) => setCustomStart(e.target.value)}
+                max={customEnd || undefined}
+                className="w-full rounded-md border border-line bg-paper-alt px-3 py-2.5 text-sm text-ink focus:border-accent focus:outline-none"
+              />
+            </div>
+            <div className="w-40">
+              <label className="mb-1.5 block text-sm font-medium text-ink">End date</label>
+              <input
+                type="date"
+                value={customEnd}
+                onChange={(e) => setCustomEnd(e.target.value)}
+                min={customStart || undefined}
+                className="w-full rounded-md border border-line bg-paper-alt px-3 py-2.5 text-sm text-ink focus:border-accent focus:outline-none"
+              />
+            </div>
+          </>
+        )}
       </div>
 
       {error ? (
@@ -208,7 +325,7 @@ export default function CommandCenterPage() {
             <Card className="p-5">
               <div className="mb-4 flex items-baseline justify-between gap-2">
                 <h2 className="font-sans text-sm font-semibold text-ink">Execution trend</h2>
-                <span className="font-mono text-xs text-muted">Web + mobile · last {TREND_DAYS} days</span>
+                <span className="font-mono text-xs text-muted">{trendRangeLabel}</span>
               </div>
               {trendPoints.length > 0 ? (
                 <LineTrendChart data={trendPoints} height={220} />
@@ -219,14 +336,18 @@ export default function CommandCenterPage() {
 
             <Card className="flex flex-col items-center p-5">
               <h2 className="mb-4 self-start font-sans text-sm font-semibold text-ink">
-                Browser coverage
+                {coverageMeta.title}
               </h2>
-              <DonutChart
-                data={browserSlices}
-                size={160}
-                centerValue={totalRuns}
-                centerLabel="runs"
-              />
+              {browserSlices.length > 0 ? (
+                <DonutChart
+                  data={browserSlices}
+                  size={160}
+                  centerValue={totalRuns}
+                  centerLabel={coverageMeta.unit}
+                />
+              ) : (
+                <p className="py-10 text-center text-sm text-muted">No data in this window.</p>
+              )}
               <ul className="mt-4 w-full space-y-1.5">
                 {browserSlices.map((slice) => (
                   <li key={slice.label} className="flex items-center gap-2 text-sm">

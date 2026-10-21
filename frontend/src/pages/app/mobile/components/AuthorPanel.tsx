@@ -41,12 +41,14 @@ export function AuthorPanel({ applications, devices, aiEnabled, applicationId, d
   // The plan-review moment: what a just-generated test is actually going to
   // do, in plain English, before the reviewer jumps to watching it run.
   const [lastPlan, setLastPlan] = useState<{ lines: string[]; warnings: string[]; suiteId: number | null } | null>(null)
-  // Optional: tag this run with a release checkpoint, same as One-Click Test.
+  // Required: tag this run with a release + sprint, same as One-Click Test.
   const [releaseId, setReleaseId] = useState('')
+  const [sprintId, setSprintId] = useState('')
   const releases = useSWR<Release[]>(
     activeProject && !isAllProjects(activeProject) ? ['releases', activeProject.id] : null,
     () => api.listReleases(activeProject!.id),
   )
+  const sprints = useSWR(releaseId ? ['release-sprints', releaseId] : null, () => api.listReleaseSprints(releaseId))
 
   const app = applications.find((a) => a.id === applicationId)
   const device = devices.find((d) => d.id === deviceId)
@@ -77,6 +79,10 @@ export function AuthorPanel({ applications, devices, aiEnabled, applicationId, d
       triggerToast('Describe what to test, or attach a document.', true)
       return
     }
+    if (!releaseId || !sprintId) {
+      triggerToast('Select a release and sprint before generating.', true)
+      return
+    }
     setBusy('generate')
     try {
       const result = await api.mobile.generateTest({
@@ -85,6 +91,7 @@ export function AuthorPanel({ applications, devices, aiEnabled, applicationId, d
         applicationId: applicationId ?? undefined,
         deviceId: deviceId ?? undefined,
         releaseId: releaseId || undefined,
+        sprintId: sprintId || undefined,
       })
       if (!result.automatable) {
         triggerToast(`Saved, but flagged as not automatable: ${result.not_automatable_reason}`, true)
@@ -198,17 +205,34 @@ export function AuthorPanel({ applications, devices, aiEnabled, applicationId, d
           />
         </div>
 
-        <div className="mt-4 max-w-xs">
+        <div className="mt-4 grid gap-4 sm:grid-cols-2 sm:max-w-lg">
           <Select
-            label="Release (optional)"
+            label="Release"
             value={releaseId}
-            onChange={(event) => setReleaseId(event.target.value)}
-            helperText="Tag this run for later comparison."
+            onChange={(event) => {
+              setReleaseId(event.target.value)
+              setSprintId('')
+            }}
+            helperText="Required — create new ones from the Releases page."
           >
-            <option value="">No release</option>
+            <option value="">Select a release…</option>
             {(releases.data ?? []).map((r) => (
               <option key={r.id} value={r.id}>
                 {r.name}
+              </option>
+            ))}
+          </Select>
+          <Select
+            label="Sprint"
+            value={sprintId}
+            onChange={(event) => setSprintId(event.target.value)}
+            disabled={!releaseId}
+            helperText={releaseId ? 'Required — attributes this run to a sprint.' : 'Pick a release first.'}
+          >
+            <option value="">Select a sprint…</option>
+            {(sprints.data ?? []).map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
               </option>
             ))}
           </Select>
@@ -218,11 +242,11 @@ export function AuthorPanel({ applications, devices, aiEnabled, applicationId, d
           onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void generate(f) }} />
 
         <div className="mt-4 flex flex-wrap gap-3">
-          <Button marker={false} disabled={!aiEnabled || busy === 'generate'} onClick={() => void generate()}>
+          <Button marker={false} disabled={!aiEnabled || busy === 'generate' || !releaseId || !sprintId} onClick={() => void generate()}>
             <Sparkles size={15} aria-hidden="true" />
             {busy === 'generate' ? 'Generating…' : 'Generate test'}
           </Button>
-          <Button variant="outline" marker={false} disabled={!aiEnabled || busy === 'generate'}
+          <Button variant="outline" marker={false} disabled={!aiEnabled || busy === 'generate' || !releaseId || !sprintId}
                   onClick={() => docRef.current?.click()}>
             Attach a document
           </Button>

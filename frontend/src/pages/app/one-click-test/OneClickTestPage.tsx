@@ -100,6 +100,10 @@ export default function OneClickTestPage() {
       triggerToast('Select at least one browser.', true)
       return
     }
+    if (!releaseId || !sprintId) {
+      triggerToast('Select a release and sprint before running.', true)
+      return
+    }
 
     setSubmitting(true)
     try {
@@ -248,15 +252,15 @@ export default function OneClickTestPage() {
             </Select>
 
             <Select
-              label="Release (optional)"
+              label="Release"
               value={releaseId}
               onChange={(event) => {
                 setReleaseId(event.target.value)
                 setSprintId('')
               }}
-              helperText="Tag this run so it shows up when comparing releases later. Create new ones from the Releases page."
+              helperText="Required — create new ones from the Releases page."
             >
-              <option value="">No release</option>
+              <option value="">Select a release…</option>
               {(releases.data ?? []).map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name}
@@ -265,13 +269,13 @@ export default function OneClickTestPage() {
             </Select>
 
             <Select
-              label="Sprint (optional)"
+              label="Sprint"
               value={sprintId}
               onChange={(event) => setSprintId(event.target.value)}
               disabled={!releaseId}
-              helperText={releaseId ? 'Attributes this run to a sprint for traceability.' : 'Pick a release first.'}
+              helperText={releaseId ? 'Required — attributes this run to a sprint for traceability.' : 'Pick a release first.'}
             >
-              <option value="">No sprint</option>
+              <option value="">Select a sprint…</option>
               {(sprints.data ?? []).map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
@@ -463,7 +467,7 @@ export default function OneClickTestPage() {
         )}
 
         <div className="mt-6 flex justify-end border-t border-line pt-5">
-          <Button onClick={() => void run()} disabled={submitting}>
+          <Button onClick={() => void run()} disabled={submitting || !releaseId || !sprintId}>
             <Play size={15} aria-hidden="true" />
             {submitting
               ? 'Queueing…'

@@ -170,6 +170,15 @@ export function classifyFailure(errorText, selector, context = {}) {
     developerAction = `Verify the credentials used for "${scenario}" and confirm the login response renders the expected authenticated state.`;
     expected = "A successful authenticated session after login.";
     actual = "The authenticated state was not reached.";
+  } else if (/assertion failed: expected .* to (be|have)/.test(e) && /getbytext\(|\.nth\(|\.first\(\)|\.last\(\)/i.test(sel)) {
+    // The check ran against a generic text match / "first of several" element, so it may not have been the
+    // control the scenario meant (e.g. "Save" also matches "Save this message"). That cannot prove the
+    // application is wrong.
+    code = "TEST_SCRIPT_ERROR";
+    likelyCause = "The state check was made on a generic text match ('first element containing the word'), which can be a different control from the one the scenario meant. A mismatch on such a target is not evidence of an application defect.";
+    developerAction = `Re-run after making the target unambiguous in "${scenario}" (name the exact button/field, e.g. its label or position). Confirm in the video which element was checked.`;
+    expected = "The check to be made on the exact control named in the scenario.";
+    actual = "The check was made on an ambiguous match and did not hold.";
   } else if (/assertion failed: expected .* to contain|but got ["'].*["']|assertion failed: expected .* to (be|have)/.test(e)) {
     // Element was found, but its text/value did not match — genuine app behaviour.
     code = "APPLICATION_ERROR";

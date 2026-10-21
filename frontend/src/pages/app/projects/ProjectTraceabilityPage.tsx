@@ -1,6 +1,7 @@
+import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import useSWR from 'swr'
-import { Network } from 'lucide-react'
+import { FileDown, FileJson, Loader2, Network } from 'lucide-react'
 import { Button } from '../../../components/ui/Button'
 import { Card } from '../../../components/ui/Card'
 import { EmptyState } from '../../../components/ui/EmptyState'
@@ -8,8 +9,10 @@ import { ErrorState } from '../../../components/ui/ErrorState'
 import { PageHeader } from '../../../components/ui/PageHeader'
 import { Skeleton } from '../../../components/ui/Skeleton'
 import { isAllProjects, useData } from '../../../contexts/DataContext'
+import { useToast } from '../../../contexts/ToastContext'
 import { api } from '../../../lib/api'
 import type { ProjectTraceability } from '../../../lib/types'
+import { downloadProjectReportPdf, downloadProjectReportJson } from '../../../features/report/hierarchicalReportExport'
 import { ReleaseStatusBadge, SprintStatusBadge } from '../releases/statusBadges'
 
 type CountItem = [label: string, value: number, detail?: string]
@@ -44,6 +47,8 @@ const adHocDetail = (a: { passed: number; failed: number; running: number }) => 
 export default function ProjectTraceabilityPage() {
   const { projectId: routeProjectId } = useParams()
   const { activeProject } = useData()
+  const { triggerToast } = useToast()
+  const [exporting, setExporting] = useState<'pdf' | 'json' | null>(null)
 
   const activeId =
     activeProject && !isAllProjects(activeProject) ? activeProject.id : undefined
@@ -53,6 +58,31 @@ export default function ProjectTraceabilityPage() {
     projectId ? ['project-traceability', projectId] : null,
     () => api.getProjectTraceability(projectId as string),
   )
+
+  async function exportPdf() {
+    if (!projectId) return
+    setExporting('pdf')
+    try {
+      await downloadProjectReportPdf(projectId)
+      triggerToast('Project report downloaded.')
+    } catch (err) {
+      triggerToast(`Export failed: ${(err as Error).message}`, true)
+    } finally {
+      setExporting(null)
+    }
+  }
+
+  async function exportJson() {
+    if (!projectId) return
+    setExporting('json')
+    try {
+      await downloadProjectReportJson(projectId)
+    } catch (err) {
+      triggerToast(`Export failed: ${(err as Error).message}`, true)
+    } finally {
+      setExporting(null)
+    }
+  }
 
   if (!projectId) {
     return (
@@ -87,7 +117,19 @@ export default function ProjectTraceabilityPage() {
       <PageHeader
         title={d ? `${d.project.name} — traceability` : 'Traceability'}
         description="Every release and sprint for this product, with rolled-up results and regressions."
-        actions={<Button href="/app/releases" variant="outline" marker={false}>Manage releases</Button>}
+        actions={
+          <>
+            <Button variant="outline" marker={false} onClick={() => void exportPdf()} disabled={!d || exporting !== null}>
+              {exporting === 'pdf' ? <Loader2 size={14} aria-hidden="true" className="animate-spin" /> : <FileDown size={14} aria-hidden="true" />}
+              Download Report
+            </Button>
+            <Button variant="outline" marker={false} onClick={() => void exportJson()} disabled={!d || exporting !== null}>
+              {exporting === 'json' ? <Loader2 size={14} aria-hidden="true" className="animate-spin" /> : <FileJson size={14} aria-hidden="true" />}
+              Download JSON
+            </Button>
+            <Button href="/app/releases" variant="outline" marker={false}>Manage releases</Button>
+          </>
+        }
       />
 
       {trace.isLoading ? (
@@ -124,6 +166,9 @@ export default function ProjectTraceabilityPage() {
                     ['new', rel.totals.new],
                     ['carried', rel.totals.carried],
                     ['ad-hoc', rel.totals.adHocTotal, adHocDetail({ passed: rel.totals.adHocPassed, failed: rel.totals.adHocFailed, running: 0 })],
+                    ['mobile', rel.totals.mobileTotal, adHocDetail({ passed: rel.totals.mobilePassed, failed: rel.totals.mobileFailed, running: 0 })],
+                    ['api', rel.totals.apiTotal, adHocDetail({ passed: rel.totals.apiPassed, failed: rel.totals.apiFailed, running: 0 })],
+                    ['db', rel.totals.dbTotal, adHocDetail({ passed: rel.totals.dbPassed, failed: rel.totals.dbFailed, running: 0 })],
                     ['regressions', rel.totals.regressionCount],
                   ]}
                 />
@@ -150,6 +195,9 @@ export default function ProjectTraceabilityPage() {
                           ['partial', s.partial],
                           ['not-run', s.notRun],
                           ['ad-hoc', s.adHoc.total, adHocDetail(s.adHoc)],
+                          ['mobile', s.mobile.total, adHocDetail(s.mobile)],
+                          ['api', s.api.total, adHocDetail(s.api)],
+                          ['db', s.db.total, adHocDetail(s.db)],
                           ['regressions', s.regressionCount],
                         ]}
                       />

@@ -56,6 +56,10 @@ async function loadReport(runId: string): Promise<{
 
 function decisionStatus(decision: string | undefined): Status {
   const value = (decision ?? '').toUpperCase()
+  if (value === 'PENDING') return 'running'
+  if (value === 'APPROVED') return 'pass'
+  if (value === 'BLOCKED') return 'fail'
+  if (value === 'CONDITIONAL') return 'flaky'
   if (value.includes('GO') && !value.includes('NO')) return 'pass'
   if (value.includes('NO')) return 'fail'
   return 'flaky'
@@ -312,6 +316,41 @@ export default function ExecutionReportPage() {
         <StatTile label="Pass rate" value={summary.passRate ?? 0} unit="%" />
         <StatTile label="Self-healed" value={summary.selfHealedCount ?? 0} />
       </div>
+
+      {execution?.triggeredBy === 'jira' && execution?.jiraSourceIssueKey && (
+        <ReportSection title="Raised from Jira">
+          <Card className="p-5">
+            <div className="flex flex-wrap items-start gap-3">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-accent-soft text-accent-deep">
+                <Bug size={16} aria-hidden="true" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-ink">
+                  <span className="font-mono text-xs text-muted">{execution.jiraSourceIssueKey}</span>
+                  {execution.jiraSourceReporter ? ` · raised by ${execution.jiraSourceReporter}` : ''}
+                </p>
+                {execution.jiraSourceSummary && (
+                  <p className="mt-1 text-sm font-medium break-words text-ink">{execution.jiraSourceSummary}</p>
+                )}
+                <p className="mt-2 text-xs text-muted">
+                  This run was generated automatically from the Jira bug above and its linked user stories.
+                </p>
+                {execution.jiraResultCommentUrl && (
+                  <a
+                    href={execution.jiraResultCommentUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
+                  >
+                    <Bug size={12} aria-hidden="true" />
+                    Result posted back to Jira
+                  </a>
+                )}
+              </div>
+            </div>
+          </Card>
+        </ReportSection>
+      )}
 
       <ReportSection title="Quality scorecard">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">

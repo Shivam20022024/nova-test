@@ -11,7 +11,7 @@ import { PageHeader } from '../../../components/ui/PageHeader'
 import { Skeleton } from '../../../components/ui/Skeleton'
 import { Textarea } from '../../../components/ui/Textarea'
 import { api } from '../../../lib/api'
-import type { Project } from '../../../lib/types'
+import type { Project, Release } from '../../../lib/types'
 import { ALL_PROJECTS, useData } from '../../../contexts/DataContext'
 import { useToast } from '../../../contexts/ToastContext'
 
@@ -26,6 +26,20 @@ export default function ProjectsPage() {
   const [description, setDescription] = useState('')
   const [creating, setCreating] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
+
+  // Guided onboarding: New Project -> Create Release -> Create Sprint, each
+  // step skippable. `wizardProject`/`wizardRelease` hold what's been created
+  // so far this run of the wizard, driving which step renders next.
+  const [wizardStep, setWizardStep] = useState<'project' | 'release' | 'sprint'>('project')
+  const [wizardProject, setWizardProject] = useState<Project | null>(null)
+  const [wizardRelease, setWizardRelease] = useState<Release | null>(null)
+  const [releaseName, setReleaseName] = useState('')
+  const [releaseDescription, setReleaseDescription] = useState('')
+  const [releaseError, setReleaseError] = useState<string | null>(null)
+  const [creatingRelease, setCreatingRelease] = useState(false)
+  const [sprintName, setSprintName] = useState('')
+  const [sprintError, setSprintError] = useState<string | null>(null)
+  const [creatingSprint, setCreatingSprint] = useState(false)
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
@@ -53,14 +67,81 @@ export default function ProjectsPage() {
       const project = await api.createProject(name.trim(), description.trim() || undefined)
       await loadProjects()
       setActiveProject(project)
-      setName('')
-      setDescription('')
-      setCreateOpen(false)
-      triggerToast(`Project "${project.name}" created.`)
+      setWizardProject(project)
+      setWizardStep('release')
     } catch (error) {
       setFormError((error as Error).message)
     } finally {
       setCreating(false)
+    }
+  }
+
+  async function createReleaseStep(event: FormEvent) {
+    event.preventDefault()
+    if (!wizardProject) return
+    if (!releaseName.trim()) {
+      setReleaseError('Enter a release name.')
+      return
+    }
+    setReleaseError(null)
+    setCreatingRelease(true)
+    try {
+      const release = await api.createRelease({
+        projectId: wizardProject.id,
+        name: releaseName.trim(),
+        description: releaseDescription.trim() || undefined,
+      })
+      setWizardRelease(release)
+      setWizardStep('sprint')
+    } catch (error) {
+      setReleaseError((error as Error).message)
+    } finally {
+      setCreatingRelease(false)
+    }
+  }
+
+  async function createSprintStep(event: FormEvent) {
+    event.preventDefault()
+    if (!wizardRelease) return
+    if (!sprintName.trim()) {
+      setSprintError('Enter a sprint name.')
+      return
+    }
+    setSprintError(null)
+    setCreatingSprint(true)
+    try {
+      await api.createSprint({ releaseId: wizardRelease.id, name: sprintName.trim() })
+      closeWizard(`Project "${wizardProject?.name}" is set up with release "${wizardRelease.name}" and sprint "${sprintName.trim()}".`)
+    } catch (error) {
+      setSprintError((error as Error).message)
+    } finally {
+      setCreatingSprint(false)
+    }
+  }
+
+  /** Ends the wizard wherever it currently is — via "Skip" at any step, or
+   *  after the sprint step completes. Whatever was already created (project,
+   *  and possibly a release) is kept; nothing is rolled back. */
+  function closeWizard(toastMessage?: string) {
+    const project = wizardProject
+    const release = wizardRelease
+    setCreateOpen(false)
+    setWizardStep('project')
+    setWizardProject(null)
+    setWizardRelease(null)
+    setName('')
+    setDescription('')
+    setReleaseName('')
+    setReleaseDescription('')
+    setReleaseError(null)
+    setSprintName('')
+    setSprintError(null)
+    if (toastMessage) {
+      triggerToast(toastMessage)
+    } else if (release) {
+      triggerToast(`Project "${project?.name}" created with release "${release.name}". Add a sprint anytime from Releases.`)
+    } else if (project) {
+      triggerToast(`Project "${project.name}" created. Add a release anytime from Releases.`)
     }
   }
 
@@ -202,12 +283,24 @@ export default function ProjectsPage() {
                       Created {new Date(project.createdAt).toLocaleDateString()}
                     </p>
 
-                    <Link
-                      to={`/app/projects/${project.id}/traceability`}
-                      className="mt-2 font-mono text-xs text-accent hover:underline"
-                    >
-                      View traceability →
-                    </Link>
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+                      <Link
+                        to={`/app/projects/${project.id}/traceability`}
+                        className="font-mono text-xs text-accent hover:underline"
+                      >
+                        View traceability →
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveProject(project)
+                          navigate('/app/releases')
+                        }}
+                        className="font-mono text-xs text-accent hover:underline"
+                      >
+                        Manage releases →
+                      </button>
+                    </div>
 
                     <div className="mt-4 flex items-center gap-2 border-t border-line pt-3">
                       {!isActive && (
@@ -248,30 +341,95 @@ export default function ProjectsPage() {
         </div>
       )}
 
-      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="New project">
-        <form onSubmit={createProject} noValidate className="flex flex-col gap-4">
-          <Input
-            label="Name"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            error={formError ?? undefined}
-          />
-          <Textarea
-            label="Description"
-            rows={3}
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-            helperText="Optional."
-          />
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" marker={false} onClick={() => setCreateOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={creating}>
-              {creating ? 'Creating…' : 'Create project'}
-            </Button>
-          </div>
-        </form>
+      <Modal
+        open={createOpen}
+        onClose={() => closeWizard()}
+        title={
+          wizardStep === 'project'
+            ? 'New project'
+            : wizardStep === 'release'
+              ? 'Create your first release'
+              : 'Create your first sprint'
+        }
+      >
+        {wizardStep === 'project' && (
+          <form onSubmit={createProject} noValidate className="flex flex-col gap-4">
+            <Input
+              label="Name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              error={formError ?? undefined}
+            />
+            <Textarea
+              label="Description"
+              rows={3}
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              helperText="Optional."
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" marker={false} onClick={() => closeWizard()}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={creating}>
+                {creating ? 'Creating…' : 'Create project'}
+              </Button>
+            </div>
+          </form>
+        )}
+
+        {wizardStep === 'release' && (
+          <form onSubmit={createReleaseStep} noValidate className="flex flex-col gap-4">
+            <p className="text-sm text-ink-soft">
+              A release groups the sprints and test runs for "{wizardProject?.name}". You can add more later.
+            </p>
+            <Input
+              label="Release name"
+              value={releaseName}
+              onChange={(event) => setReleaseName(event.target.value)}
+              error={releaseError ?? undefined}
+              placeholder="e.g. v1.0"
+            />
+            <Textarea
+              label="Description"
+              rows={3}
+              value={releaseDescription}
+              onChange={(event) => setReleaseDescription(event.target.value)}
+              helperText="Optional."
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" marker={false} onClick={() => closeWizard()}>
+                Skip for now
+              </Button>
+              <Button type="submit" disabled={creatingRelease}>
+                {creatingRelease ? 'Creating…' : 'Create release'}
+              </Button>
+            </div>
+          </form>
+        )}
+
+        {wizardStep === 'sprint' && (
+          <form onSubmit={createSprintStep} noValidate className="flex flex-col gap-4">
+            <p className="text-sm text-ink-soft">
+              A sprint is where you'll assign test cases and track runs within "{wizardRelease?.name}".
+            </p>
+            <Input
+              label="Sprint name"
+              value={sprintName}
+              onChange={(event) => setSprintName(event.target.value)}
+              error={sprintError ?? undefined}
+              placeholder="e.g. Sprint 1"
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" marker={false} onClick={() => closeWizard()}>
+                Skip for now
+              </Button>
+              <Button type="submit" disabled={creatingSprint}>
+                {creatingSprint ? 'Creating…' : 'Create sprint'}
+              </Button>
+            </div>
+          </form>
+        )}
       </Modal>
     </div>
   )

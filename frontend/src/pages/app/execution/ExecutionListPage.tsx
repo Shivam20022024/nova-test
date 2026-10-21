@@ -102,6 +102,8 @@ export default function ExecutionListPage() {
         devices: config.devices,
         project_id: activeProject.id,
         suite_id: config.suiteId || null,
+        release_id: config.releaseId || null,
+        sprint_id: config.sprintId || null,
       })
       setModalOpen(false)
       await mutate()
@@ -337,6 +339,7 @@ export default function ExecutionListPage() {
         onClose={() => setModalOpen(false)}
         suites={suites}
         defaultSuiteId={activeSuite?.id ?? null}
+        projectId={activeProject.id}
         submitting={submitting}
         onSubmitRun={(config) => void submitRun(config)}
       />

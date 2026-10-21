@@ -77,8 +77,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
       const data = await api.getProjects()
       setProjects(data)
       // Only auto-select when nothing is chosen yet, so a refresh triggered by
-      // creating or renaming a project does not yank the user elsewhere.
-      setActiveProject((current) => current ?? (data.length > 0 ? data[0] : ALL_PROJECTS))
+      // creating or renaming a project does not yank the user elsewhere. The
+      // default landing scope is always "All Projects" — logging in or
+      // reloading should never silently pin the dashboard to one project.
+      setActiveProject((current) => current ?? ALL_PROJECTS)
     } catch (error) {
       triggerToast(`Could not load projects: ${(error as Error).message}`, true)
     } finally {

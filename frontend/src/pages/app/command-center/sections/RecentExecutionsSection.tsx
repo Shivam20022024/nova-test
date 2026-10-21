@@ -1,6 +1,6 @@
 import { Fragment, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ChevronDown, ChevronRight, Folder, FolderOpen, Globe, Smartphone } from 'lucide-react'
+import { Braces, Bug, ChevronDown, ChevronRight, Database, Folder, FolderOpen, GitBranch, Globe, Smartphone } from 'lucide-react'
 import { StatusBadge } from '../../../../components/ui/StatusBadge'
 import type { Status } from '../../../../components/ui/StatusBadge'
 import type { RecentExecutionItem, RunSource } from '../../../../lib/types'
@@ -11,26 +11,35 @@ function toRunSource(source: RunSource | undefined): RunSource {
   return source ?? 'web'
 }
 
+const SOURCE_META: Record<RunSource, { color: string; icon: typeof Globe; label: string }> = {
+  web: { color: 'var(--color-running)', icon: Globe, label: 'Web' },
+  mobile: { color: 'var(--color-healing)', icon: Smartphone, label: 'Mobile' },
+  api: { color: 'var(--color-pass)', icon: Braces, label: 'API' },
+  db: { color: 'var(--color-flaky)', icon: Database, label: 'Database' },
+}
+
 function SourceBadge({ source }: { source: RunSource }) {
-  const isMobile = source === 'mobile'
+  const meta = SOURCE_META[source]
+  const Icon = meta.icon
   return (
     <span
       className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-xs"
       style={{
-        color: isMobile ? 'var(--color-healing)' : 'var(--color-running)',
-        backgroundColor: isMobile
-          ? 'color-mix(in srgb, var(--color-healing) 12%, transparent)'
-          : 'color-mix(in srgb, var(--color-running) 12%, transparent)',
+        color: meta.color,
+        backgroundColor: `color-mix(in srgb, ${meta.color} 12%, transparent)`,
       }}
     >
-      {isMobile ? <Smartphone size={11} aria-hidden="true" /> : <Globe size={11} aria-hidden="true" />}
-      {isMobile ? 'Mobile' : 'Web'}
+      <Icon size={11} aria-hidden="true" />
+      {meta.label}
     </span>
   )
 }
 
 function reportPath(source: RunSource, runId: string): string {
-  return source === 'mobile' ? `/app/mobile/executions/${runId}/report` : `/app/execution/${runId}/report`
+  if (source === 'mobile') return `/app/mobile/executions/${runId}/report`
+  if (source === 'api') return `/app/api-testing/executions/${runId}/report`
+  if (source === 'db') return `/app/db-testing/executions/${runId}/report`
+  return `/app/execution/${runId}/report`
 }
 
 /**
@@ -44,6 +53,37 @@ function toStatus(raw: string): Status {
   if (status === 'failed' || status === 'blocked') return 'fail'
   if (status === 'running' || status === 'queued' || status === 'pending') return 'running'
   return 'blocked'
+}
+
+/** Small "CI · abc1234" tag for a row that came from routes/ci.ts's
+ *  /trigger or /simulate — absent (and this renders nothing) on every
+ *  normal run, so existing rows look exactly as they always have. */
+function CiTag({ commitSha }: { commitSha?: string | null }) {
+  return (
+    <span
+      className="ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-mono text-[10px]"
+      style={{ color: 'var(--color-accent)', backgroundColor: 'color-mix(in srgb, var(--color-accent) 12%, transparent)' }}
+      title="Triggered by a CI pipeline"
+    >
+      <GitBranch size={9} aria-hidden="true" />
+      CI{commitSha ? ` · ${commitSha.slice(0, 7)}` : ''}
+    </span>
+  )
+}
+
+/** "Jira · OCQ-142" tag for a run a bug raised in Jira triggered (see
+ *  routes/jiraIntake.ts). Absent -> renders nothing, like CiTag above. */
+function JiraTag({ issueKey }: { issueKey?: string | null }) {
+  return (
+    <span
+      className="ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-mono text-[10px]"
+      style={{ color: 'var(--color-accent)', backgroundColor: 'color-mix(in srgb, var(--color-accent) 12%, transparent)' }}
+      title="Raised as a bug in Jira"
+    >
+      <Bug size={9} aria-hidden="true" />
+      Jira{issueKey ? ` · ${issueKey}` : ''}
+    </span>
+  )
 }
 
 function formatWhen(value: string | null): string {
@@ -174,7 +214,11 @@ export function RecentExecutionsSection({ items }: { items: RecentExecutionItem[
                     <SourceBadge source={rowSource} />
                   </td>
                   <td className="px-3 py-2.5">
-                    <span className="block font-medium text-ink">{item.testName}</span>
+                    <span className="flex items-center text-ink">
+                      <span className="font-medium">{item.testName}</span>
+                      {item.triggeredBy === 'ci' && <CiTag commitSha={item.commitSha} />}
+                      {item.triggeredBy === 'jira' && <JiraTag issueKey={item.jiraSourceIssueKey} />}
+                    </span>
                     <span className="block font-mono text-xs text-muted">{item.run_id}</span>
                   </td>
                   <td className="px-3 py-2.5 text-ink-soft capitalize">{item.browser}</td>

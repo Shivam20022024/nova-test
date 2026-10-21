@@ -51,7 +51,7 @@ async function getNovalantisLogoDataUrl() {
 /**
  * Fetches an arbitrary (screenshot) URL and converts it to a base64 data URL so
  * jsPDF's addImage can embed it. Returns null on any failure (CORS, 404,
- * network) so the caller can fall back to "image unavailable" — never throws,
+ * network) so the caller can fall back to "image unavailable" - never throws,
  * never fabricates.
  */
 async function fetchImageDataUrl(url) {
@@ -72,9 +72,9 @@ async function fetchImageDataUrl(url) {
 }
 
 /* ────────────────────────────────────────────────────────────
- * PDF design system — shared colors, geometry, and helpers
+ * PDF design system - shared colors, geometry, and helpers
  * ──────────────────────────────────────────────────────────── */
-// Moved to pdfDesignSystem.ts, which the mobile report's PDF export shares —
+// Moved to pdfDesignSystem.ts, which the mobile report's PDF export shares -
 // kept the same local names here so nothing below this line had to change.
 const PDF = { margin: PDF_MARGIN, colors: PDF_COLORS };
 const pdfDecisionPalette = sharedDecisionPalette;
@@ -86,7 +86,7 @@ const pdfDecisionPalette = sharedDecisionPalette;
  * execution timeline, and detailed narrative + tabular sections.
  *
  * Note: jsPDF's built-in Helvetica font only supports the WinAnsi
- * character set, which does NOT include ✓ / ✕ / ⚠ — those render
+ * character set, which does NOT include ✓ / ✕ / ⚠ - those render
  * as garbage glyphs. Status is therefore always communicated via a
  * small filled circle (drawn as a vector shape) plus a plain-text,
  * color-coded label instead of relying on Unicode symbols.
@@ -233,7 +233,7 @@ export async function generateReportPdf(report, options = { download: true }) {
   setColor(doc.setFillColor.bind(doc), c.ink);
   doc.rect(0, 0, pageWidth, 64, "F");
 
-  // Brand mark — the actual Novalantis logo, on a white card since the
+  // Brand mark - the actual Novalantis logo, on a white card since the
   // source JPG has an opaque white background (JPEGs can't be transparent).
   const logoW = 34;
   const logoH = 12.3; // preserves the source image's ~2.77:1 aspect ratio
@@ -242,7 +242,7 @@ export async function generateReportPdf(report, options = { download: true }) {
     doc.roundedRect(margin, 15, logoW + 3, logoH + 3, 2, 2, "F");
     doc.addImage(logoDataUrl, "JPEG", margin + 1.5, 16.5, logoW, logoH);
   } else {
-    // Fallback if the logo failed to load — keep the page from looking broken
+    // Fallback if the logo failed to load - keep the page from looking broken
     setColor(doc.setFillColor.bind(doc), c.brandIndigo);
     doc.roundedRect(margin, 16, 10, 10, 2, 2, "F");
     doc.setFont("helvetica", "bold");
@@ -269,11 +269,11 @@ export async function generateReportPdf(report, options = { download: true }) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
   setColor(doc.setTextColor.bind(doc), c.inkMuted);
-  doc.text(`Run #${report.metadata.runNumber}  •  Generated ${report.metadata.createdAtFormatted}`, margin, 54);
+  doc.text(`Run #${report.metadata.runNumber} - Generated ${report.metadata.createdAtFormatted}`, margin, 54);
 
   currentY = 76;
 
-  // Test identity card — height flexes with content instead of a fixed box
+  // Test identity card - height flexes with content instead of a fixed box
   const identityCardTop = currentY;
   let identityCursor = currentY + 9;
   doc.setFont("helvetica", "bold");
@@ -313,13 +313,13 @@ export async function generateReportPdf(report, options = { download: true }) {
 
   currentY = identityCardTop + identityCardH + 8;
 
-  // Release decision hero — height + text now flex to fit wrapped content
+  // Release decision hero - height + text now flex to fit wrapped content
   const palette = pdfDecisionPalette(report.releaseDecision.decision);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(14);
   const decisionTitleLines = doc.splitTextToSize(`AI RELEASE DECISION: ${report.releaseDecision.title}`, contentWidth - 18);
   doc.setFontSize(8);
-  const reasonsLines = doc.splitTextToSize(report.releaseDecision.reasons.join("   •   "), contentWidth - 12).slice(0, 2);
+  const reasonsLines = doc.splitTextToSize(report.releaseDecision.reasons.join(" - "), contentWidth - 12).slice(0, 2);
   const heroH = 10 + decisionTitleLines.length * 6 + 6 + reasonsLines.length * 4 + 4;
 
   const heroTop = currentY;
@@ -339,7 +339,7 @@ export async function generateReportPdf(report, options = { download: true }) {
   doc.setFontSize(9);
   setColor(doc.setTextColor.bind(doc), c.inkSoft);
   doc.text(
-    `Health Score: ${report.releaseDecision.healthScore}/100   •   Risk: ${report.releaseDecision.riskLevel}   •   AI Confidence: ${report.releaseDecision.confidence}%   •   Pass Rate: ${report.summary.passRate}%`,
+    `Health Score: ${report.releaseDecision.healthScore}/100 - Risk: ${report.releaseDecision.riskLevel} - AI Confidence: ${report.releaseDecision.confidence}% - Pass Rate: ${report.summary.passRate}%`,
     margin + 6,
     heroCursor
   );
@@ -382,7 +382,7 @@ export async function generateReportPdf(report, options = { download: true }) {
     ["DOM Stability", String(report.summary.domStability)],
   ];
   // Rows can grow past a fixed spacing once optional sections push the TOC
-  // past ~10 entries — shrink line pitch (never below 4mm) so it always
+  // past ~10 entries - shrink line pitch (never below 4mm) so it always
   // fits above the cover footer instead of overflowing the page.
   const maxRows = Math.max(runDetailRows.length, tocEntries.length);
   const availableRowsH = pageHeight - 24 - (columnsTop + 6);
@@ -401,7 +401,7 @@ export async function generateReportPdf(report, options = { download: true }) {
     doc.setFont("helvetica", "normal");
   });
 
-  // Table of contents — fills out the cover page with a genuinely
+  // Table of contents - fills out the cover page with a genuinely
   // useful index instead of leaving the bottom of the page blank.
   const tocX = margin + colW + colGap;
   doc.setFont("helvetica", "bold");
@@ -446,7 +446,7 @@ export async function generateReportPdf(report, options = { download: true }) {
     if (pct > 0) doc.roundedRect(margin, y + 1.5, barW * pct, 2.6, 1.3, 1.3, "F");
   };
   const priorityColor = (p) => (p === "CRITICAL" ? c.rose : p === "HIGH" ? [249, 115, 22] : p === "MEDIUM" ? c.amber : c.emerald);
-  const clip = (s, n) => { const v = String(s ?? ""); return v.length > n ? v.slice(0, n - 1) + "…" : v; };
+  const clip = (s, n) => { const v = String(s ?? ""); return v.length > n ? v.slice(0, n - 1) + "..." : v; };
 
   const s = report.summary;
   const ec = report.executionClassification || {};
@@ -456,7 +456,7 @@ export async function generateReportPdf(report, options = { download: true }) {
   bodyText(s.aiSummaryText || "No summary narrative was generated for this execution.");
   currentY += 2;
   bodyText(
-    `Health Score: ${s.healthScore}/100   •   Pass Rate (steps): ${s.passRate}%   •   Interaction Success: ${s.interactionSuccessRate}%`,
+    `Health Score: ${s.healthScore}/100 - Pass Rate (steps): ${s.passRate}% - Interaction Success: ${s.interactionSuccessRate}%`,
     { size: 8, color: c.inkMuted }
   );
   currentY += 4;
@@ -469,7 +469,7 @@ export async function generateReportPdf(report, options = { download: true }) {
     const boxTop = currentY;
     const reasons = (report.releaseDecision.reasons || []).filter(Boolean);
     doc.setFontSize(8);
-    const wrappedReasons = reasons.flatMap((r) => doc.splitTextToSize(`• ${r}`, contentWidth - 12));
+    const wrappedReasons = reasons.flatMap((r) => doc.splitTextToSize(` - ${r}`, contentWidth - 12));
     const boxH = 20 + wrappedReasons.length * 4;
     setColor(doc.setFillColor.bind(doc), palette2.bg);
     setColor(doc.setDrawColor.bind(doc), palette2.border);
@@ -484,7 +484,7 @@ export async function generateReportPdf(report, options = { download: true }) {
     doc.setFontSize(8);
     setColor(doc.setTextColor.bind(doc), c.inkSoft);
     doc.text(
-      `Execution: ${ec.executionStatus || "COMPLETED"}   •   Failure Class: ${report.releaseDecision.failureClass || "n/a"}   •   Application Quality: ${report.releaseDecision.applicationQuality || "EVALUATED"}${report.releaseDecision.blockType ? `   •   Block Type: ${report.releaseDecision.blockType}` : ""}`,
+      `Execution: ${ec.executionStatus || "COMPLETED"} - Failure Class: ${report.releaseDecision.failureClass || "n/a"} - Application Quality: ${report.releaseDecision.applicationQuality || "EVALUATED"}${report.releaseDecision.blockType ? ` - Block Type: ${report.releaseDecision.blockType}` : ""}`,
       margin + 6,
       boxTop + 15
     );
@@ -501,8 +501,8 @@ export async function generateReportPdf(report, options = { download: true }) {
   /* ── 3. TEST EXECUTION SUMMARY ───────────────────────────── */
   sectionTitle("Test Execution Summary");
   kpiCardGrid([
-    { label: "Scenarios", value: s.totalTests, color: c.ink, sub: `${s.passedCount} pass • ${s.failedCount} fail` },
-    { label: "Executable Steps", value: s.totalSteps, color: c.ink, sub: `${s.passedSteps} pass • ${s.failedSteps} fail • ${s.skippedSteps || 0} skip` },
+    { label: "Scenarios", value: s.totalTests, color: c.ink, sub: `${s.passedCount} pass - ${s.failedCount} fail` },
+    { label: "Executable Steps", value: s.totalSteps, color: c.ink, sub: `${s.passedSteps} pass - ${s.failedSteps} fail - ${s.skippedSteps || 0} skip` },
     { label: "Step Pass Rate", value: `${s.passRate}%`, color: scoreColor(s.passRate), sub: `${s.passedSteps}/${s.executableStepTotal || s.totalSteps} steps` },
     { label: "Self-Healed", value: report.healingSummary ? report.healingSummary.successes : s.selfHealedCount, color: c.brandCyan, sub: report.healingSummary ? `${report.healingSummary.successes}/${report.healingSummary.attempts} recovered` : "selectors recovered" },
   ]);
@@ -539,7 +539,7 @@ export async function generateReportPdf(report, options = { download: true }) {
     t.durationMs ? `${(t.durationMs / 1000).toFixed(1)}s` : "<1s",
     t.risk,
     t.healed ? "Yes" : "No",
-    clip(t.error || "—", 40),
+    clip(t.error || "-", 40),
   ]);
   autoTable(doc, {
     startY: currentY,
@@ -561,7 +561,7 @@ export async function generateReportPdf(report, options = { download: true }) {
 
   // Scenarios skipped because a prerequisite scenario failed (test-design issue)
   if (report.blockedScenarios && report.blockedScenarios.length > 0) {
-    bodyText(`SKIPPED — PREREQUISITE FAILED (${report.blockedScenarios.length})`, { size: 8, color: c.amberDark, bold: true });
+    bodyText(`SKIPPED - PREREQUISITE FAILED (${report.blockedScenarios.length})`, { size: 8, color: c.amberDark, bold: true });
     currentY += 1;
     report.blockedScenarios.forEach((b) => {
       ensureSpace(6);
@@ -569,11 +569,11 @@ export async function generateReportPdf(report, options = { download: true }) {
       doc.setFont("helvetica", "normal");
       doc.setFontSize(7.6);
       setColor(doc.setTextColor.bind(doc), c.inkSoft);
-      const lines = doc.splitTextToSize(`${b.scenario} — ${b.reason}`, contentWidth - 8);
+      const lines = doc.splitTextToSize(`${b.scenario} - ${b.reason}`, contentWidth - 8);
       doc.text(lines, margin + 5, currentY);
       currentY += lines.length * 3.8;
     });
-    bodyText("These are test-design / sequencing issues, not application defects — fix the failing prerequisite scenario first.", { size: 7, color: c.inkMuted });
+    bodyText("These are test-design / sequencing issues, not application defects - fix the failing prerequisite scenario first.", { size: 7, color: c.inkMuted });
     currentY += 4;
   }
 
@@ -629,8 +629,8 @@ export async function generateReportPdf(report, options = { download: true }) {
     report.developerActions.slice(0, 12).forEach((a, idx) => {
       ensureSpace(20);
       const top = currentY;
-      const actLines = doc.splitTextToSize(a.recommendedAction || "—", contentWidth - 10);
-      const probLines = doc.splitTextToSize(a.problem || "—", contentWidth - 10);
+      const actLines = doc.splitTextToSize(a.recommendedAction || "-", contentWidth - 10);
+      const probLines = doc.splitTextToSize(a.problem || "-", contentWidth - 10);
       const cardH = 13 + probLines.length * 3.6 + actLines.length * 3.6;
       setColor(doc.setFillColor.bind(doc), c.panelBg);
       setColor(doc.setDrawColor.bind(doc), c.hairline);
@@ -645,7 +645,7 @@ export async function generateReportPdf(report, options = { download: true }) {
       doc.setFont("helvetica", "normal");
       doc.setFontSize(6.8);
       setColor(doc.setTextColor.bind(doc), c.inkMuted);
-      doc.text(clip(`${a.page}   •   ${a.failedElement || "n/a"}`, 120), margin + 3, top + 9.5);
+      doc.text(clip(`${a.page} - ${a.failedElement || "n/a"}`, 120), margin + 3, top + 9.5);
       setColor(doc.setTextColor.bind(doc), c.inkSoft);
       doc.setFontSize(7.2);
       let dy = top + 13;
@@ -666,13 +666,13 @@ export async function generateReportPdf(report, options = { download: true }) {
       const top = currentY;
       const rows = [
         ["WHAT FAILED", `${d.action} on ${d.selector} (${d.selectorType})`],
-        ["WHERE", `${d.scenario}  —  ${d.page}${d.stepNumber ? `  (step ${d.stepNumber})` : ""}`],
-        ["EXPECTED", d.expectedResult || "—"],
-        ["ACTUAL", d.actualResult || d.error || "—"],
-        ["EXACT ERROR", d.error || "—"],
-        ["CATEGORY", `${d.failureCategory}   •   Severity: ${d.severity}   •   ${d.isApplicationDefect ? "Application defect" : "Not confirmed as application defect"}`],
-        ["WHY (likely root cause)", d.likelyRootCause || "—"],
-        ["WHAT TO CHECK", d.developerAction || "—"],
+        ["WHERE", `${d.scenario}  -  ${d.page}${d.stepNumber ? `  (step ${d.stepNumber})` : ""}`],
+        ["EXPECTED", d.expectedResult || "-"],
+        ["ACTUAL", d.actualResult || d.error || "-"],
+        ["EXACT ERROR", d.error || "-"],
+        ["CATEGORY", `${d.failureCategory} - Severity: ${d.severity} - ${d.isApplicationDefect ? "Application defect" : "Not confirmed as application defect"}`],
+        ["WHY (likely root cause)", d.likelyRootCause || "-"],
+        ["WHAT TO CHECK", d.developerAction || "-"],
         ["SELF-HEALING", d.healed ? "Attempted during this step" : "Not attempted / not applicable"],
         ["EVIDENCE", d.evidence || "Screenshot not available"],
       ];
@@ -713,7 +713,7 @@ export async function generateReportPdf(report, options = { download: true }) {
       `Step ${h.stepIndex ?? "-"}`,
       clip(h.testName, 22),
       h.originalSelector,
-      h.success ? h.healedSelector : "—",
+      h.success ? h.healedSelector : "-",
       h.recoveryType === "MISSING_SELECTOR_RECOVERY" ? "Missing selector" : "Selector drift",
       h.success ? "RECOVERED" : "FAILED",
     ]);
@@ -743,7 +743,7 @@ export async function generateReportPdf(report, options = { download: true }) {
     bodyText(
       report.accessibility.status === "COMPLIANT"
         ? "The automated axe-core scan (WCAG 2.1 A / AA) found no violations in the audited DOM states."
-        : `${report.accessibility.violations.length} WCAG violation(s) detected — Critical: ${report.accessibility.scores.critical}, Serious: ${report.accessibility.scores.serious}, Moderate: ${report.accessibility.scores.moderate}, Minor: ${report.accessibility.scores.minor}. The affected control(s) should be reviewed before release.`,
+        : `${report.accessibility.violations.length} WCAG violation(s) detected - Critical: ${report.accessibility.scores.critical}, Serious: ${report.accessibility.scores.serious}, Moderate: ${report.accessibility.scores.moderate}, Minor: ${report.accessibility.scores.minor}. The affected control(s) should be reviewed before release.`,
       { size: 8, color: report.accessibility.status === "COMPLIANT" ? c.emeraldDark : c.roseDark }
     );
     currentY += 3;
@@ -783,7 +783,7 @@ export async function generateReportPdf(report, options = { download: true }) {
   if (report.security.evaluated) {
     bodyText(`Status: ${report.security.label}. Checks performed: ${(report.security.checksPerformed || []).join(", ")}.`, { size: 8, color: c.inkSoft, bold: true });
     currentY += 2;
-    bodyText(`Mixed content: ${report.security.issues.mixedContent ? "DETECTED" : "None"}    •    Insecure form actions: ${report.security.issues.insecureForms ? "DETECTED" : "None"}`, { size: 8, color: c.inkSoft });
+    bodyText(`Mixed content: ${report.security.issues.mixedContent ? "DETECTED" : "None"} - Insecure form actions: ${report.security.issues.insecureForms ? "DETECTED" : "None"}`, { size: 8, color: c.inkSoft });
     currentY += 2;
     if (report.security.issues.missingHeaders && report.security.issues.missingHeaders.length > 0) {
       bodyText(`Missing security headers: ${report.security.issues.missingHeaders.join(", ")}`, { size: 8, color: c.roseDark, bold: true });
@@ -805,7 +805,7 @@ export async function generateReportPdf(report, options = { download: true }) {
       String(p.passed),
       String(p.failed),
       p.status,
-      clip((p.issues || []).join(" | ") || "—", 46),
+      clip((p.issues || []).join(" | ") || "-", 46),
     ]);
     autoTable(doc, {
       startY: currentY,
@@ -863,7 +863,7 @@ export async function generateReportPdf(report, options = { download: true }) {
     sectionTitle("Screenshot / Evidence", `${shots.length + vids.length}`);
 
     if (shots.length === 0 && vids.length === 0) {
-      bodyText("Evidence unavailable — no screenshots or video were captured for this execution.", { size: 8.5, color: c.inkMuted });
+      bodyText("Evidence unavailable - no screenshots or video were captured for this execution.", { size: 8.5, color: c.inkMuted });
       currentY += 4;
     } else {
       // Embed the actual images (failure-state first), capped to keep the PDF
@@ -888,7 +888,7 @@ export async function generateReportPdf(report, options = { download: true }) {
           sh.isFailure ? "Failure state" : "Standard",
           sh.stepLabel || (sh.stepIndex ? `failed step ${sh.stepIndex}` : null),
           sh.timestamp,
-        ].filter(Boolean).join("  •  ");
+        ].filter(Boolean).join(" - ");
         currentY += 3.6;
         doc.text(clip(ctx, 110), margin, currentY);
         currentY += 3;
@@ -914,7 +914,7 @@ export async function generateReportPdf(report, options = { download: true }) {
             currentY += 2;
           }
         } else {
-          bodyText("Image unavailable — could not be fetched (it may require authentication or has expired). See the interactive report on the NovaTest AI dashboard.", { size: 7, color: c.inkMuted });
+          bodyText("Image unavailable - could not be fetched (it may require authentication or has expired). See the interactive report on the NovaTest AI dashboard.", { size: 7, color: c.inkMuted });
           currentY += 2;
         }
       }
@@ -941,14 +941,14 @@ export async function generateReportPdf(report, options = { download: true }) {
 
       vids.forEach((v) => {
         ensureSpace(6);
-        bodyText(`Video Replay — ${v.browser || "chromium"}, ${v.durationFormatted || "duration unknown"} (viewable on the NovaTest AI dashboard)`, { size: 8, color: c.inkSoft });
+        bodyText(`Video Replay - ${v.browser || "chromium"}, ${v.durationFormatted || "duration unknown"} (viewable on the NovaTest AI dashboard)`, { size: 8, color: c.inkSoft });
       });
       bodyText("Full-resolution media is available in the interactive report on the NovaTest AI dashboard.", { size: 7, color: c.inkMuted });
       currentY += 4;
     }
   }
 
-  // Bug Tracking — linked Jira ticket, when the run auto-filed one on failure
+  // Bug Tracking - linked Jira ticket, when the run auto-filed one on failure
   if (hasJira) {
     sectionTitle("Bug Tracking", "Jira Integration");
     const jiraRows = [
@@ -973,7 +973,7 @@ export async function generateReportPdf(report, options = { download: true }) {
 
   /* ── 13. AI INSIGHTS ─────────────────────────────────────── */
   if (hasAiInsights) {
-    sectionTitle("AI Insights", "Explanatory — Not Authoritative");
+    sectionTitle("AI Insights", "Explanatory - Not Authoritative");
     if (hasObservations) {
       report.ai.observations.slice(0, 8).forEach((obs) => {
         ensureSpace(10);
@@ -1059,7 +1059,7 @@ export async function generateReportPdf(report, options = { download: true }) {
     });
     currentY = doc.lastAutoTable.finalY + 4;
     if (report.timeline.length > 70) {
-      bodyText(`+ ${report.timeline.length - 70} more event(s) — see the full report on the NovaTest AI dashboard.`, { size: 7, color: c.inkMuted });
+      bodyText(`+ ${report.timeline.length - 70} more event(s) - see the full report on the NovaTest AI dashboard.`, { size: 7, color: c.inkMuted });
     }
     currentY += 6;
   }
@@ -1087,7 +1087,7 @@ export async function generateReportPdf(report, options = { download: true }) {
   });
   currentY = doc.lastAutoTable.finalY + 4;
 
-  // Raw execution logs — verbatim, so nothing is lost from the PDF.
+  // Raw execution logs - verbatim, so nothing is lost from the PDF.
   if (report.technical.rawLogs) {
     bodyText("RAW EXECUTION LOGS", { size: 8, color: c.inkMuted, bold: true });
     currentY += 1;
@@ -1108,7 +1108,7 @@ export async function generateReportPdf(report, options = { download: true }) {
     doc.setFont("helvetica", "normal");
     if (rawLogText.length > 14000) {
       currentY += 2;
-      bodyText(`… log truncated at 14,000 characters (${rawLogText.length.toLocaleString()} total). Full logs on the dashboard.`, { size: 7, color: c.inkMuted });
+      bodyText(`... log truncated at 14,000 characters (${rawLogText.length.toLocaleString()} total). Full logs on the dashboard.`, { size: 7, color: c.inkMuted });
     }
     currentY += 4;
   }
@@ -1132,7 +1132,7 @@ export async function generateReportPdf(report, options = { download: true }) {
     setColor(doc.setTextColor.bind(doc), c.inkMuted);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(7.5);
-    doc.text("NOVATEST AI — TEST INTELLIGENCE REPORT", headerTextX, 10);
+    doc.text("NOVATEST AI - TEST INTELLIGENCE REPORT", headerTextX, 10);
     doc.setFont("helvetica", "normal");
     doc.text(`Run #${report.metadata.runNumber}`, pageWidth - margin, 10, { align: "right" });
     setColor(doc.setDrawColor.bind(doc), c.hairline);
@@ -1144,11 +1144,11 @@ export async function generateReportPdf(report, options = { download: true }) {
     doc.line(margin, pageHeight - 14, pageWidth - margin, pageHeight - 14);
     doc.setFontSize(7);
     setColor(doc.setTextColor.bind(doc), c.inkMuted);
-    doc.text("Confidential — Generated by NovaTest AI", margin, pageHeight - 9);
+    doc.text("Confidential - Generated by NovaTest AI", margin, pageHeight - 9);
     doc.text(`Page ${i - 1} of ${totalPages - 1}`, pageWidth - margin, pageHeight - 9, { align: "right" });
   }
 
-  // Cover page footer (no page number — it's the title page)
+  // Cover page footer (no page number - it's the title page)
   doc.setPage(1);
   setColor(doc.setDrawColor.bind(doc), c.hairline);
   doc.setLineWidth(0.3);
@@ -1156,7 +1156,7 @@ export async function generateReportPdf(report, options = { download: true }) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7);
   setColor(doc.setTextColor.bind(doc), c.inkMuted);
-  doc.text("Confidential — Generated by NovaTest AI", margin, pageHeight - 9);
+  doc.text("Confidential - Generated by NovaTest AI", margin, pageHeight - 9);
   doc.text(`${totalPages} page(s) total`, pageWidth - margin, pageHeight - 9, { align: "right" });
 
   const filename = `NovaTest_Report_${report.metadata.runNumber}.pdf`;
