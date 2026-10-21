@@ -62,7 +62,7 @@ import type {
 } from './types'
 
 /** Base URL of backend-node. Also the Socket.IO origin for live runs. */
-export const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8080'
+export const API_BASE = import.meta.env.VITE_API_BASE || 'https://nova-test-phtf.onrender.com'
 
 const STORAGE_KEYS = {
   TOKEN: 'ai_qa_token',
