@@ -102,7 +102,7 @@ httpServer.on('error', (err: any) => {
     listenAttempts++;
     if (listenAttempts <= 8) {
       console.warn(`[Startup] Port ${PORT} is busy (attempt ${listenAttempts}/8); retrying in 1.5s...`);
-      setTimeout(() => httpServer.listen(PORT), 1500);
+      setTimeout(() => httpServer.listen(Number(PORT), '0.0.0.0'), 1500);
       return;
     }
     console.error(`[Startup] FATAL: port ${PORT} is already used by another NovaTest backend. Stop the other copy ('npm run dev' running twice?). This process will not start workers and is exiting.`);
@@ -112,7 +112,7 @@ httpServer.on('error', (err: any) => {
   process.exit(1);
 });
 
-httpServer.listen(PORT, () => {
+httpServer.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`Novalantis Backend running on port ${PORT}`);
   startBackgroundWorkers();
 });

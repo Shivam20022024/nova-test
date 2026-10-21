@@ -1,19 +1,23 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabaseUrl = process.env.SUPABASE_URL || '';
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 if (!supabaseUrl || !supabaseServiceKey) {
-  throw new Error('Missing environment variables SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY. Ensure .env is loaded and these values are defined.');
+  console.warn('[Storage] Warning: Missing environment variables SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY. Storage operations will be disabled until configured.');
 }
 
-export const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false,
-    detectSessionInUrl: false
+export const supabase = createClient(
+  supabaseUrl || 'https://placeholder.supabase.co',
+  supabaseServiceKey || 'placeholder-key',
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false
+    }
   }
-});
+);
 
 export async function ensureBucketsExist() {
   // 'mobile-evidence' holds the Android engine's screenshots, hierarchy dumps,
