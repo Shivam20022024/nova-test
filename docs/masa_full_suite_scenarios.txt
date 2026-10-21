@@ -1,0 +1,149 @@
+Scenario 1: Sign in to Masa
+Open https://dev.masa.life/login.
+Wait until the heading "Welcome back." is visible.
+Type the test username into the field labelled "EMAIL".
+Type the test password into the field labelled "PASSWORD".
+If a Cloudflare box is shown under the password field, wait until it says "Success!".
+Click the large "Sign in" submit button below the password field (not the "Sign in" tab at the top of the card).
+Verify the page address does not contain "/login".
+Verify the navigation tabs "Today", "Journey", "Care" and "More" are visible.
+
+Scenario 2: Today screen content
+Open https://dev.masa.life/.
+Verify a heading that starts with "Good" (morning, afternoon or evening) is visible.
+Verify text in the form "Day <number> · Natural cycle" is visible.
+Verify the text box with the placeholder "A line for today. Private. Just for you." is visible.
+Verify the "Cycle calendar" button, the "Log temperature" link and the "How you're doing" link are visible.
+Do not save, dismiss or change anything.
+
+Scenario 3: Journal Save button only enables when text is typed
+Open https://dev.masa.life/.
+Verify the journal "Save" button is disabled.
+Type the words "draft check" into the text box with the placeholder "A line for today. Private. Just for you.". Do not press Save.
+Verify the journal "Save" button is enabled.
+Clear the text from that text box.
+Verify the journal "Save" button is disabled again.
+
+Scenario 4: Main navigation tabs
+Open https://dev.masa.life/.
+Click the "Journey" tab. Verify the page address contains "/journey" and the heading "My Journey" is visible.
+Click the "Care" tab. Verify the page address contains "/care" and the heading "Care" is visible.
+Click the "More" tab. Verify the page address contains "/more" and the heading "More" is visible.
+Click the "Today" tab. Verify a heading that starts with "Good" is visible.
+
+Scenario 5: Journey page
+Open https://dev.masa.life/journey.
+Verify the heading "My Journey" is visible.
+Verify the text "Fertility — Natural cycle" is visible.
+Verify the link "My journey history" is visible.
+Verify the items "Current cycle", "My care team" and "Coming up" are visible.
+Verify the link "Calendar" is visible.
+
+Scenario 6: Journey change dialog opens and closes safely
+Open https://dev.masa.life/journey.
+Click the "change" button.
+Verify the heading "Your current cycle" is visible.
+Verify the buttons "End this cycle", "Mark as a loss" and "Never mind, stay here" are visible. Do NOT click "End this cycle" or "Mark as a loss".
+Click "Never mind, stay here".
+Verify the heading "Your current cycle" is no longer visible.
+
+Scenario 7: Care hub
+Open https://dev.masa.life/care.
+Verify the heading "Care" is visible.
+Verify these six items are visible: "Care team", "Appointments", "Learn", "Glossary", "My journals", "My journey history".
+Click the "Appointments" item. Verify the page address contains "/calendar" and the heading "Appointments" is visible.
+
+Scenario 8: Appointments page and filters
+Open https://dev.masa.life/calendar.
+Verify the heading "Appointments" and the text "Everything in one place. Across every journey." are visible.
+Verify the search box with the placeholder "Search appointments…" is visible. Do not type in it.
+Verify the buttons "Add", "Filter", "Previous month", "Next month" and "Jump to today" are visible.
+Click "Next month", then click "Jump to today".
+Click "Filter". Verify the filter options "Labs", "OB visit" and "Embryo transfer" are visible.
+
+Scenario 9: Add appointment dialog with a custom dropdown (cancel, never save)
+Open https://dev.masa.life/calendar.
+Click the "Add" button.
+Verify the heading "Add appointment" is visible.
+Verify the "Title" field, the "All day" switch and the "Notes (optional)" field are visible.
+In the first dropdown of the dialog (the one that shows "—"), choose the option "Gynecologist visit".
+Verify the first dropdown now shows "Gynecologist visit".
+Click "Cancel". Verify the heading "Add appointment" is no longer visible. Do NOT click "Save".
+
+Scenario 10: Care team add-provider dialog (cancel, never save)
+Open https://dev.masa.life/care-team.
+Verify the heading "Care team" is visible.
+Click the "Add" button.
+Verify the heading "Add provider" is visible and the fields "Name", "Phone" and "Notes" are visible.
+Click "Cancel". Verify the heading "Add provider" is no longer visible. Do NOT click "Save".
+
+Scenario 11: Cycle tracking page
+Open https://dev.masa.life/cycle. This page is slow; wait until the heading "This cycle" is visible.
+Verify the headings "Cycle calendar", "Cycle signs", "Pregnancy tests", "BBT" and "History" are visible.
+Verify the buttons "Positive" and "Negative" (pregnancy test options) are visible. Do not click them.
+Verify the "Print" button is visible.
+Do not click any "Save", "Edit" or "Delete" button.
+
+Scenario 12: Learn library and an article
+Open https://dev.masa.life/learn.
+Verify the heading "Learn" is visible.
+Verify the search box with the placeholder "Search articles and terms" and the link "Browse the A–Z glossary" are visible.
+Click the category "YOUR BODY" to expand it.
+Verify the article link "Listening to your body without grading it" is visible.
+Click that article link. Verify the page address contains "/learn/listening-to-your-body" and its title heading is visible.
+
+Scenario 13: Glossary
+Open https://dev.masa.life/learn/glossary.
+Verify the heading "Glossary" is visible.
+Verify the search box with the placeholder "Search the glossary" is visible.
+Verify the section headings "IUI", "IVF" and "PREGNANCY" are visible.
+
+Scenario 14: Settings page (look only - nothing is changed or saved)
+Open https://dev.masa.life/settings.
+Verify the heading "Settings" and the headings "Appearance", "Daily message", "Weekly reflection" and "Data & privacy" are visible.
+Verify the button "Save settings" is visible. Do not click it.
+Verify the buttons "Download my data", "Reset my data" and "Delete my account" are visible. NEVER click them.
+
+Scenario 15: Profile and edit-profile pages
+Open https://dev.masa.life/profile.
+Verify the rows "Profile", "Membership", "Security" and "Sign out" are visible. Do not click "Sign out".
+Click the "Profile" row. Verify the page address contains "/profile/edit".
+Verify the "Email" field is disabled and the "Display name" and "Birth year" fields are visible.
+Do not click any "Save", "Change email" or "Change password" button.
+
+Scenario 16: Membership and plans (no purchases)
+Open https://dev.masa.life/subscription.
+Verify the heading "Your membership", the heading "Manage subscriptions" and the plan name "Masa Core" with the label "Free" are visible.
+Click the link "UPGRADE MY PLAN". Verify the page address contains "/subscription/plans".
+Verify the heading "Compare all plans", the text "Charter · first 500 only" and the price "$253.39 once" are visible.
+Verify the plans "Masa Pro", "Masa Life" and "Masa Guide" are visible.
+Do NOT click "Purchase Masa Charter", "TRY PRO FREE" or any price button.
+
+Scenario 17: Security page (look only)
+Open https://dev.masa.life/security.
+Verify the headings "Security", "Face ID / Touch ID", "Two-factor authentication" and "Active sessions" are visible.
+Verify the switch "Enable biometric login" is disabled.
+Do not click any button on this page, especially "Add authenticator", "Sign out all other devices" and "Sign out everywhere".
+
+Scenario 18: Information pages
+Open https://dev.masa.life/how-masa-works. Verify the heading "How Masa works" is visible.
+Open https://dev.masa.life/about. Verify the heading "About Masa" and the links "Privacy Policy", "Terms of Service" and "Accessibility Statement" are visible.
+Open https://dev.masa.life/terms. Verify the heading "Terms of Service" is visible.
+Open https://dev.masa.life/privacy-policy. Verify the heading "Privacy Policy" is visible.
+Open https://dev.masa.life/accessibility. Verify the heading "Accessibility Statement" is visible.
+
+Scenario 19: Share your story and feedback forms (never submitted)
+Open https://dev.masa.life/share-your-story.
+Verify the heading "Share your story" is visible and the button "Send my story" is disabled. Do not type or send anything.
+Open https://dev.masa.life/help.
+Verify the heading "Questions and Feedback" is visible and the "Send" button is disabled. Do not type or send anything.
+
+Scenario 20: More hub
+Open https://dev.masa.life/more.
+Verify these links are visible: "Profile", "Membership", "Settings", "Saved messages", "How Masa works", "What's new", "Share your story", "Questions and Feedback", "About Masa".
+Click "What's new". Verify the page address contains "/whats-new" and the heading "What's new" is visible.
+
+Scenario 21: Sign out
+Open https://dev.masa.life/.
+Click the "Sign out" button in the page header.
+Verify the page address contains "/login" and the heading "Welcome back." is visible.

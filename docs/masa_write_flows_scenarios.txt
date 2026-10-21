@@ -1,0 +1,75 @@
+Scenario 1: Sign in to Masa
+Open https://dev.masa.life/login.
+Wait until the heading "Welcome back." is visible.
+Type the test username into the field labelled "EMAIL".
+Type the test password into the field labelled "PASSWORD".
+If a Cloudflare box is shown under the password field, wait until it says "Success!".
+Click the large "Sign in" submit button below the password field (not the "Sign in" tab at the top of the card).
+Verify the page address does not contain "/login".
+Verify the navigation tabs "Today", "Journey", "Care" and "More" are visible.
+
+Scenario 2: Journal entry - create, edit and delete
+Open https://dev.masa.life/journal.
+Verify the text "Nothing yet. Start on Today." is visible.
+Open https://dev.masa.life/.
+Type "Attended the morning consultation and felt well supported by the care team." into the text box with the placeholder "A line for today. Private. Just for you.".
+Click the journal "Save" button (the one next to "Journal history", not the small "Save this message" bookmark at the top).
+Verify the text "Journal history (1)" is visible.
+Open https://dev.masa.life/journal.
+Verify the text "Attended the morning consultation and felt well supported by the care team." is visible.
+Click the "EDIT" button.
+Replace the text in the edit box with "Attended the morning consultation. The doctor recommended a follow-up scan next week.".
+Click the "Save" button.
+Verify the text "The doctor recommended a follow-up scan next week." is visible.
+Click the "DELETE" button.
+Verify the text "Delete this entry?" is visible.
+Click the "Delete" button in the confirmation dialog.
+Verify the text "Nothing yet. Start on Today." is visible.
+
+Scenario 3: Care team provider - add, edit and remove
+Open https://dev.masa.life/care-team.
+Verify the text "No one yet. Add your first provider when you're ready." is visible.
+Click the "Add" button.
+Verify the dialog heading "Add provider" is visible.
+Type "Dr. Anita Sharma" into the Name field (placeholder "Dr. Yulianti").
+Type "12 Wellness Avenue, Mumbai 400001" into the Address field.
+Type "+91 22 5555 0142" into the Phone field.
+Type "Reproductive endocrinologist. Preferred contact is by phone during clinic hours." into the Notes field.
+Click the "Save" button in the dialog.
+Verify the text "Dr. Anita Sharma" and the text "+91 22 5555 0142" are visible.
+Click the provider card "Dr. Anita Sharma" to open it.
+Replace the Phone field with "+91 22 5555 0199".
+Click the "Save" button in the dialog.
+Verify the text "+91 22 5555 0199" is visible.
+Click the Delete (trash) button on the provider card.
+Verify the text "Remove this provider?" is visible.
+Click the "Remove" button in the confirmation dialog.
+Verify the text "No one yet. Add your first provider when you're ready." is visible.
+
+Scenario 4: Appointment - add, edit and delete
+Open https://dev.masa.life/calendar.
+Click today's date to open the day dialog.
+If the dialog shows "+ Add appointment" or "+ Add another", click it.
+Verify the dialog heading "Add appointment" is visible.
+Type "Follow-up consultation" into the field with the placeholder "Title".
+Choose "Gynecologist visit" in the appointment type dropdown.
+Set the time to 10:30 AM.
+Type "Please bring the previous scan reports and the list of questions." into the field with the placeholder "Notes (optional)".
+Click the "Save" button in the dialog.
+Verify the text "Follow-up consultation" is visible.
+Click "Follow-up consultation" to open the day dialog.
+Click the "Edit" button.
+Verify the dialog heading "Edit appointment" is visible.
+Replace the Title with "Follow-up consultation (rescheduled)".
+Click the "Save" button in the dialog.
+Verify the text "Follow-up consultation (rescheduled)" is visible.
+Click the "Delete" button in the day dialog.
+Verify the text "Follow-up consultation (rescheduled)" is not visible.
+Click the "Close" button.
+
+Scenario 5: Saved messages - bookmark and remove
+Open https://dev.masa.life/.
+Click the small bookmark button labelled "Save this message" under "FOR TODAY".
+Verify the button labelled "Remove from saved messages" is visible.
+Click the button labelled "Remove from saved messages".
+Verify the button labelled "Save this message" is visible again.

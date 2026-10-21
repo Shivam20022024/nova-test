@@ -1,0 +1,32 @@
+Scenario 1: Sign in to Masa
+Open https://dev.masa.life/login.
+Wait until the heading "Welcome back." is visible.
+Type the test username into the field labelled "EMAIL".
+Type the test password into the field labelled "PASSWORD".
+If a Cloudflare box is shown under the password field, wait until it says "Success!".
+Click the large "Sign in" submit button below the password field (not the "Sign in" tab at the top of the card).
+Verify the page address does not contain "/login".
+Verify the navigation tabs "Today", "Journey", "Care" and "More" are visible.
+
+Scenario 2: Today screen content
+Open https://dev.masa.life/.
+Verify a heading that starts with "Good" (morning, afternoon or evening) is visible.
+Verify text in the form "Day <number> · Natural cycle" is visible.
+Verify the text box with the placeholder "A line for today. Private. Just for you." is visible.
+Verify the "Cycle calendar" button, the "Log temperature" link and the "How you're doing" link are visible.
+Do not save, dismiss or change anything.
+
+Scenario 3: Journal Save button only enables when text is typed
+Open https://dev.masa.life/.
+Verify the journal "Save" button is disabled.
+Type the words "draft check" into the text box with the placeholder "A line for today. Private. Just for you.". Do not press Save.
+Verify the journal "Save" button is enabled.
+Clear the text from that text box.
+Verify the journal "Save" button is disabled again.
+
+Scenario 4: Main navigation tabs
+Open https://dev.masa.life/.
+Click the "Journey" tab. Verify the page address contains "/journey" and the heading "My Journey" is visible.
+Click the "Care" tab. Verify the page address contains "/care" and the heading "Care" is visible.
+Click the "More" tab. Verify the page address contains "/more" and the heading "More" is visible.
+Click the "Today" tab. Verify a heading that starts with "Good" is visible.

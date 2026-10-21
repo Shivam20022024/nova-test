@@ -1,0 +1,174 @@
+Scenario 1: Sign in to Masa
+Open https://dev.masa.life/login.
+Verify the heading "Welcome back." is visible.
+Type the test username into the field labelled "EMAIL".
+Type the test password into the field labelled "PASSWORD".
+Wait 6 seconds for the Cloudflare check under the password field to finish.
+Click the "Sign in" submit button inside the login form, below the password field (not the "Sign in" tab at the top of the card).
+Verify the page address does not contain "/login".
+Verify the link "Today" is visible in the top navigation bar.
+Verify the link "Journey" is visible in the top navigation bar.
+Verify the link "Care" is visible in the top navigation bar.
+Verify the link "More" is visible in the top navigation bar.
+
+Scenario 2: Today screen content
+Open https://dev.masa.life/.
+Verify a heading that starts with "Good" is visible.
+Verify the text "Natural cycle" is visible.
+Verify the button "Cycle calendar" is visible.
+Verify the link "Log temperature" is visible.
+Verify the link "How you're doing" is visible.
+Verify the text box with the placeholder "A line for today. Private. Just for you." is visible.
+
+Scenario 3: Daily journal - write, save, edit and delete an entry
+Open https://dev.masa.life/.
+Click the text box with the placeholder "A line for today. Private. Just for you.".
+Type "Attended the morning consultation and felt well supported by the care team." into the text box with the placeholder "A line for today. Private. Just for you.".
+Click the button named exactly "Save" that sits directly under the journal text box (its name is just "Save"; it is not the bookmark button named "Save this message").
+Verify the text "Journal history (1)" is visible.
+Open https://dev.masa.life/journal.
+Verify the text "Attended the morning consultation and felt well supported by the care team." is visible.
+Click the button named "EDIT".
+Replace the text in the edit text box with "Attended the morning consultation. The doctor recommended a follow-up scan next week.".
+Click the button named "Save".
+Verify the text "The doctor recommended a follow-up scan next week." is visible.
+Click the button named "DELETE".
+Verify the text "Delete this entry?" is visible.
+Click the button named "Delete" inside the confirmation dialog.
+Verify the text "Nothing yet. Start on Today." is visible.
+
+Scenario 4: Saved message - bookmark and remove
+Open https://dev.masa.life/.
+Click the button with the accessible name "Save this message".
+Verify the button with the accessible name "Remove from saved messages" is visible.
+Click the button with the accessible name "Remove from saved messages".
+Verify the button with the accessible name "Save this message" is visible.
+
+Scenario 5: Cycle logging - save, edit and delete today's symptoms
+Open https://dev.masa.life/cycle.
+Wait 8 seconds for the cycle page to finish loading.
+Verify the heading "This cycle" is visible.
+Click the symptom button named "fatigue".
+Click the note text box with the placeholder "Just context for these symptoms — not your journal.".
+Type "Mild fatigue in the afternoon after a busy morning." into the note text box with the placeholder "Just context for these symptoms — not your journal.".
+Click the button named "Save today".
+Click the "RECENT DAYS" section heading to expand it.
+Verify the text "Mild fatigue in the afternoon" is visible.
+Click the first button whose accessible name starts with "Edit entry for".
+Replace the note in the note text box with "Mild fatigue in the afternoon. Resting and drinking plenty of water.".
+Click the button named "Update".
+Click the first button whose accessible name starts with "Delete entry for".
+Verify the text "Delete this entry?" is visible.
+Click the button named "Delete" inside the confirmation dialog.
+Verify the heading "This cycle" is visible.
+
+Scenario 6: Care team - add, edit and remove a provider
+Open https://dev.masa.life/care-team.
+Verify the text "No one yet. Add your first provider when you're ready." is visible.
+Click the button named "Add".
+Verify the dialog heading "Add provider" is visible.
+Type "Dr. Anita Sharma" into the Name field with the placeholder "Dr. Yulianti".
+Type "12 Wellness Avenue, Mumbai 400001" into the Address field with the placeholder "Street, city — taps to open in Maps".
+Type "+91 22 5555 0142" into the Phone field.
+Type "Reproductive endocrinologist. Preferred contact is by phone during clinic hours." into the Notes field with the placeholder "Anything useful to remember".
+Click the button named "Save" inside the dialog.
+Verify the text "Dr. Anita Sharma" is visible.
+Verify the text "+91 22 5555 0142" is visible.
+Click the button with the accessible name "Open Dr. Anita Sharma".
+Replace the text in the Phone field with "+91 22 5555 0199".
+Click the button named "Save" inside the dialog.
+Verify the text "+91 22 5555 0199" is visible.
+Click the button with the accessible name "Delete" on the provider card.
+Verify the text "Remove this provider?" is visible.
+Click the button named "Remove" inside the confirmation dialog.
+Verify the text "No one yet. Add your first provider when you're ready." is visible.
+
+Scenario 7: Appointments - add with the time picker, edit and delete
+Open https://dev.masa.life/calendar.
+Wait 3 seconds for the calendar to load.
+Verify the heading "Appointments" is visible.
+Click the calendar day button named with today's day-of-month number to open the day dialog.
+Click the button named "+ Add appointment" inside the day dialog.
+Verify the dialog heading "Add appointment" is visible.
+Type "Follow-up consultation" into the field with the placeholder "Title".
+Click the dropdown (combobox button) in the dialog that currently shows "—".
+Click the option "Gynecologist visit".
+Click the dropdown (combobox button) in the dialog that currently shows "9".
+Click the option "10".
+Click the dropdown (combobox button) in the dialog that currently shows "00".
+Click the option "30".
+Click the dropdown (combobox button) in the dialog that currently shows "AM".
+Click the option "PM".
+Type "Please bring the previous scan reports and the list of questions." into the field with the placeholder "Notes (optional)".
+Click the button named "Save" inside the dialog.
+Verify the text "Follow-up consultation" is visible.
+Click the text "Follow-up consultation" to open the day dialog.
+Verify the text "10:30pm" is visible.
+Click the button named "Edit" inside the day dialog.
+Verify the dialog heading "Edit appointment" is visible.
+Replace the text in the field with the placeholder "Title" with "Follow-up consultation (rescheduled)".
+Click the button named "Save" inside the dialog.
+Verify the text "Follow-up consultation (rescheduled)" is visible.
+Click the button named "Delete" inside the day dialog.
+Verify the text "Nothing on" is visible.
+Click the button named "Close" inside the day dialog.
+
+Scenario 8: Learn, Glossary and What's new
+Open https://dev.masa.life/learn.
+Verify the heading "Learn" is visible.
+Type "two-week wait" into the search field with the placeholder "Search articles and terms".
+Verify the text "two-week wait" is visible.
+Open https://dev.masa.life/learn/glossary.
+Verify the heading "Glossary" is visible.
+Type "ovulation" into the search field with the placeholder "Search the glossary".
+Verify the text "ovulation" is visible.
+Open https://dev.masa.life/whats-new.
+Verify the heading "What's new" is visible.
+
+Scenario 9: Journey, Profile, Membership and Security (view only)
+Open https://dev.masa.life/journey.
+Verify the heading "My Journey" is visible.
+Verify the link "My journey history" is visible.
+Verify the link "Calendar" is visible.
+Open https://dev.masa.life/profile.
+Verify the button with the accessible name "Sign out" is visible.
+Open https://dev.masa.life/subscription.
+Verify the heading "Your membership" is visible.
+Verify the text "Masa Core" is visible.
+Open https://dev.masa.life/security.
+Verify the heading "Security" is visible.
+
+Scenario 10: Settings - change a preference and restore it
+Open https://dev.masa.life/settings.
+Verify the heading "Settings" is visible.
+Click the radio button named "°C (Celsius)" in the "BBT unit" group.
+Click the button named "Save settings".
+Verify the text "Saved." is visible.
+Click the radio button named "°F (Fahrenheit)" in the "BBT unit" group.
+Click the button named "Save settings".
+Verify the text "Saved." is visible.
+
+Scenario 11: Information pages and main navigation
+Open https://dev.masa.life/how-masa-works.
+Verify a heading is visible.
+Open https://dev.masa.life/about.
+Verify a heading is visible.
+Open https://dev.masa.life/.
+Click the link "Journey" in the top navigation bar.
+Verify the page address contains "/journey".
+Verify the heading "My Journey" is visible.
+Click the link "Care" in the top navigation bar.
+Verify the page address contains "/care".
+Verify the heading "Care" is visible.
+Click the link "More" in the top navigation bar.
+Verify the page address contains "/more".
+Verify the heading "More" is visible.
+Click the link "Today" in the top navigation bar.
+Verify a heading that starts with "Good" is visible.
+
+Scenario 12: Sign out of Masa
+Open https://dev.masa.life/.
+Click the icon button with the accessible name "Sign out" in the top header. A single click signs out and no confirmation appears.
+Verify the page address contains "/login".
+Verify the heading "Welcome back." is visible.
+Verify the field labelled "EMAIL" is visible.
