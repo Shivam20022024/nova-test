@@ -61,8 +61,20 @@ import type {
   TestSuite,
 } from './types'
 
+function getApiBase(): string {
+  const envBase = import.meta.env.VITE_API_BASE;
+  // If hosted (on Vercel or any non-localhost domain), ignore accidental localhost env vars
+  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    if (envBase && !envBase.includes('127.0.0.1') && !envBase.includes('localhost') && envBase.startsWith('http')) {
+      return envBase.replace(/\/+$/, '');
+    }
+    return 'https://nova-test-phtf.onrender.com';
+  }
+  return (envBase || 'https://nova-test-phtf.onrender.com').replace(/\/+$/, '');
+}
+
 /** Base URL of backend-node. Also the Socket.IO origin for live runs. */
-export const API_BASE = import.meta.env.VITE_API_BASE || 'https://nova-test-phtf.onrender.com'
+export const API_BASE = getApiBase();
 
 const STORAGE_KEYS = {
   TOKEN: 'ai_qa_token',
